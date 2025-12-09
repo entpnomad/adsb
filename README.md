@@ -50,6 +50,14 @@ python3 plot_map.py --home-address "10 Downing Street, London, UK"
 
 This geocodes your address, looks up the elevation, and saves it for distance calculations.
 
+## Architecture
+
+- **Capture pipeline**: `dump1090` emits SBS-1 messages on TCP 30003, which `adsb_cli.py csv`/`adsb_to_csv.py` consumes to produce `output/adsb_current.csv` (rolling window) and `output/adsb_history.csv` (append-only).
+- **File-based maps**: `plot_map.py` renders HTML from CSV files, `watch_map.py` keeps the map fresh, `serve_map.py` hosts the output, and `portal.py` builds `output/index.html` with links to maps and CSVs.
+- **Database + API path**: `adsb_cli.py db`/`adsb_to_db.py` ingest streams, CSV snapshots, or simulated tracks into Postgres. `api_main.py` exposes `/api/aircraft/*` and serves the Leaflet UI at `/map`, using `api_static/` assets.
+- **Simulation and demos**: `simulate_stream.py` fakes a dump1090 feed for local demos; Docker Compose stacks spin up Postgres plus ingestion, plotting, or the API using the same code paths.
+- **Remote sender**: `Dockerfile.sender` builds an `adsb_sender` image that reads a friend's dump1090 feed and POSTs to the API ingest endpoint (`/api/ingest`), keeping the database closed from remote collectors.
+
 ## Installation
 
 ### Prerequisites
@@ -117,45 +125,48 @@ python adsb_cli.py plot --csv output/adsb_current.csv --output output/adsb_curre
 python adsb_cli.py watch --csv output/adsb_current.csv --output output/adsb_current_map.html --interval 2
 ```
 
-### PostgreSQL (ingest y datos de demo)
+### Docker Compose (server: API + Postgres)
 
-Configura `ADSB_DB_URL` (p. ej. `postgresql://user:pass@host:5432/adsb`) y usa el CLI:
+Bring up the server stack (Postgres + FastAPI viewer/map):
 
 ```bash
-# Docker-compose por modo (sin tocar entorno):
-# 1) Simulación de datos (default)
-docker compose up -d adsb_app postgres
-# 2) Ingerir un CSV histórico
-docker compose up -d adsb_app_from_csv postgres
-# 3) Stream en vivo desde dump1090
-docker compose up -d adsb_app_stream postgres
-
-# 4) Demo con mapa servido en http://localhost:8000/adsb_current_map.html
-docker compose up -d adsb_map_demo  # incluye portal en /index.html
-
-# Sin Docker, comandos equivalentes:
-ADSB_DB_URL=... python adsb_cli.py db --from-csv output/adsb_history.csv   # volcar CSV
-ADSB_DB_URL=... python adsb_cli.py db --simulate 300                       # datos sintéticos
-ADSB_DB_URL=... python adsb_cli.py db --stream                             # en vivo desde dump1090
+docker compose up -d postgres adsb_view_db
 ```
 
-### Imagen Docker para el emisor (amigo con antena)
+- API and map UI: `http://localhost:8000` (see `/map`, `/docs`, `/api/health`).
+- Database: `postgresql://adsb:adsb@localhost:5432/adsb`.
+- Ingest endpoint for remote senders: `POST /api/ingest` with `{"positions": [...]}`.
 
-Construye y ejecuta el colector que envía a tu Postgres:
+Feed data into Postgres with your preferred pipeline. Examples from the host:
+
 ```bash
-# Build una vez
-docker build -f Dockerfile.sender -t adsb-sender .
+# Live from dump1090 (SBS-1 on 30003)
+ADSB_DB_URL=postgresql://adsb:adsb@localhost:5432/adsb python adsb_cli.py db --stream
 
-# Linux: accede al dump1090 local vía host networking
-docker run --rm --network host -e ADSB_DB_URL="postgresql://user:pass@TU_IP:5432/adsb" adsb-sender
-
-# Windows/macOS (Docker Desktop): apunta al host desde el contenedor
-docker run --rm \
-  --add-host=host.docker.internal:host-gateway \
-  -e ADSB_HOST=host.docker.internal -e ADSB_PORT=30003 \
-  -e ADSB_DB_URL="postgresql://user:pass@TU_IP:5432/adsb" \
-  adsb-sender
+# Ingest an existing CSV snapshot
+ADSB_DB_URL=postgresql://adsb:adsb@localhost:5432/adsb python adsb_cli.py db --from-csv output/adsb_history.csv
 ```
+
+### Docker Compose (antenna sender)
+
+Use a dedicated compose per environment to forward local dump1090 data to the central API ingest endpoint:
+
+```bash
+# Linux (host networking)
+docker compose --env-file .env.antenna -f docker-compose.antenna.yml up -d adsb_sender
+
+# Docker Desktop (mac/Windows, no host networking)
+docker compose --env-file .env.antenna -f docker-compose.antenna.desktop.yml up -d adsb_sender
+```
+
+Fill in `.env.antenna` (copy from `.env.antenna.example`) with at least:
+```
+ADSB_INGEST_URL=http://SERVER_IP:8000/api/ingest
+ADSB_HOST=127.0.0.1            # use host.docker.internal on Desktop
+ADSB_PORT=30003
+ADSB_BATCH_SIZE=100
+```
+The Desktop compose already maps `host.docker.internal` for you via `extra_hosts`.
 
 ### Home Location Setup
 
@@ -171,50 +182,18 @@ export ADSB_HOME_ELEVATION_M=5
 
 ## Project Structure
 
-```
-adsb/
-├── adsb.sh              # Main entry script (starts everything)
-├── adsb_to_csv.py       # ADS-B to CSV logger
-├── plot_map.py          # Map visualization with all features
-├── aircraft_db.py       # Aircraft database lookup (370+ type mappings)
-├── serve_map.py         # HTTP server for maps
-├── watch_map.py         # Auto-update map watcher
-├── README.md
-├── SPEC.md
-├── requirements.txt
-├── .gitignore
-│
-├── src/                 # Shared library code
-│   ├── __init__.py
-│   └── lib/
-│       ├── __init__.py
-│       ├── config.py    # Centralized paths and settings
-│       ├── geo.py       # Geocoding, elevation, distance
-│       └── colors.py    # Altitude color mapping
-│
-├── assets/              # Static assets
-│   └── icons/           # 91 aircraft SVG silhouettes from tar1090
-│       ├── a380.svg, a320.svg, b737.svg   # Commercial airliners
-│       ├── f35.svg, f18.svg, typhoon.svg  # Military jets
-│       ├── helicopter.svg, blackhawk.svg  # Rotorcraft
-│       ├── glider.svg, cessna.svg         # Light aircraft
-│       ├── c130.svg, c17.svg              # Military transport
-│       └── ... (91 total icons)
-│
-├── output/              # Generated files (gitignored)
-│   ├── adsb_history.csv
-│   ├── adsb_current.csv
-│   ├── adsb_map.html
-│   ├── adsb_current_map.html
-│   └── *_data.json
-│
-├── config/              # User configuration (gitignored)
-│   └── home_location.json
-│
-└── data/                # Downloaded data (gitignored)
-    └── aircraft_db.csv
-```
-
+- `adsb.sh` - main entry script that chains capture -> CSV -> map/server.
+- `adsb_cli.py` - Python CLI with `csv`, `plot`, `watch`, and `db` subcommands.
+- `adsb_to_csv.py` - SBS-1 stream to CSV logger (current + historical).
+- `adsb_to_db.py` - stream/CSV/simulated ingest into Postgres.
+- `plot_map.py` / `watch_map.py` - render HTML maps from CSV and refresh on change.
+- `serve_map.py` / `portal.py` - lightweight HTTP server plus index page for outputs.
+- `api_main.py` - FastAPI service backed by Postgres with a Leaflet UI at `/map`.
+- `api_static/` - static HTML/CSS/JS used by the API-hosted UI.
+- `assets/icons/` - 91 SVG silhouettes used for aircraft icons.
+- `output/` - generated CSVs/maps (gitignored).
+- `config/` - user configuration such as `home_location.json` (gitignored).
+- `data/` - downloaded datasets like `aircraft_db.csv` (gitignored).
 ## Map Features
 
 ### Aircraft Icons

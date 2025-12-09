@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="es">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -26,7 +26,7 @@
 <body>
   <div class="banner">
     <h1>ADS-B Live (API)</h1>
-    <div class="meta" id="status">Cargando...</div>
+    <div class="meta" id="status">Loading...</div>
     <div class="legend">
       <span style="background:#FF8C00"></span>0ft
       <span style="background:#FFD700"></span>4k
@@ -38,9 +38,9 @@
   </div>
   <div id="map"></div>
   <div class="control" style="position:fixed; top:10px; right:10px; z-index:1000; background: rgba(0,0,0,0.55); padding:10px 12px; border:1px solid rgba(255,255,255,0.1); border-radius:10px; backdrop-filter: blur(10px);">
-    <label for="since">Ventana (seg):</label>
+    <label for="since">Window (sec):</label>
     <input id="since" type="number" value="300" min="30" step="30" style="width:90px; margin-left:6px;" />
-    <button id="apply" style="margin-left:6px;">Aplicar</button>
+    <button id="apply" style="margin-left:6px;">Apply</button>
   </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -87,21 +87,25 @@
       if (ft == null) return "#808080";
       if (ft <= colorStops[0][0]) return colorStops[0][1];
       if (ft >= colorStops[colorStops.length-1][0]) return colorStops[colorStops.length-1][1];
-      for (let i=0;i<colorStops.length-1;i++) {
-        const [a1,c1]=colorStops[i]; const [a2,c2]=colorStops[i+1];
-        if (ft>=a1 && ft<=a2) return Math.abs(ft-a1)<Math.abs(ft-a2)?c1:c2;
+      for (let i = 0; i < colorStops.length - 1; i++) {
+        const [a1, c1] = colorStops[i];
+        const [a2, c2] = colorStops[i + 1];
+        if (ft >= a1 && ft <= a2) {
+          return Math.abs(ft - a1) < Math.abs(ft - a2) ? c1 : c2;
+        }
       }
       return "#808080";
     }
+
     async function svgIcon(iconName, color, heading) {
       const rot = heading != null ? heading : 0;
       let svg = await loadIcon(iconName);
       if (!svg) svg = await loadIcon("plane");
       if (!svg) svg = `<svg width="28" height="28" viewBox="0 0 64 64" fill="${color}"><path d="M32 4 L40 32 L32 28 L24 32 Z"></path><rect x="28" y="32" width="8" height="20" rx="2" fill="${color}"></rect></svg>`;
-      svg = svg.replace(/fill=\"#[0-9a-fA-F]{6}\"/g, `fill="${color}"`);
-      svg = svg.replace(/width=\"\d+\"/g, 'width="28"').replace(/height=\"\d+\"/g, 'height="28"');
+      svg = svg.replace(/fill="#[0-9a-fA-F]{6}"/g, `fill="${color}"`);
+      svg = svg.replace(/width="\d+"/g, 'width="28"').replace(/height="\d+"/g, 'height="28"');
       const html = `<div style="transform: rotate(${rot}deg); filter: drop-shadow(1px 1px 2px rgba(0,0,0,0.6));">${svg}</div>`;
-      return L.divIcon({ html, className: 'aircraft', iconSize: [28,28], iconAnchor:[14,14] });
+      return L.divIcon({ html, className: 'aircraft', iconSize: [28, 28], iconAnchor: [14, 14] });
     }
 
     function fmt(num, unit) {
@@ -121,10 +125,10 @@
         const resp = await fetch(`/api/aircraft/current?since_seconds=${windowSeconds}`);
         if (!resp.ok) throw new Error(resp.statusText);
         const data = await resp.json();
-        document.getElementById('status').textContent = `Aviones: ${data.length} · ${new Date().toLocaleTimeString()}`;
-        let bounds = [];
+        document.getElementById('status').textContent = `Aircraft: ${data.length} | ${new Date().toLocaleTimeString()}`;
+        const bounds = [];
         for (const ac of data) {
-          if (ac.lat == null || ac.lon == null) return;
+          if (ac.lat == null || ac.lon == null) continue;
           const key = ac.icao;
           const latlng = [ac.lat, ac.lon];
           bounds.push(latlng);
@@ -134,14 +138,14 @@
           const popup = `
             <div class="popup">
               <div><strong>${ac.icao}</strong> ${ac.flight || ""}</div>
-              ${ac.registration ? `<div class="label">Matrícula</div>${ac.registration}` : ""}
-              ${ac.type ? `<div class="label">Tipo</div>${ac.type}` : ""}
-              ${ac.model ? `<div class="label">Modelo</div>${ac.model}` : ""}
-              <div class="label">Altitud</div>${fmt(ac.altitude_ft,"ft")}
-              <div class="label">Velocidad</div>${fmt(ac.speed_kts,"kts")}
-              <div class="label">Rumbo</div>${fmt(ac.heading_deg,"°")}
-              <div class="label">Squawk</div>${ac.squawk||""}
-              <div class="label">TS</div>${ac.ts || ""}
+              ${ac.registration ? `<div class="label">Registration</div>${ac.registration}` : ""}
+              ${ac.type ? `<div class="label">Type</div>${ac.type}` : ""}
+              ${ac.model ? `<div class="label">Model</div>${ac.model}` : ""}
+              <div class="label">Altitude</div>${fmt(ac.altitude_ft,"ft")}
+              <div class="label">Speed</div>${fmt(ac.speed_kts,"kts")}
+              <div class="label">Heading</div>${fmt(ac.heading_deg,"deg")}
+              <div class="label">Squawk</div>${ac.squawk || ""}
+              <div class="label">Timestamp</div>${ac.ts || ""}
             </div>`;
           if (markers[key]) {
             markers[key].setLatLng(latlng).setIcon(icon).setPopupContent(popup);
@@ -153,7 +157,7 @@
           map.fitBounds(bounds, { maxZoom: 9, animate: false });
         }
       } catch (e) {
-        document.getElementById('status').textContent = 'Error de API';
+        document.getElementById('status').textContent = 'API error';
         console.error(e);
       }
     }

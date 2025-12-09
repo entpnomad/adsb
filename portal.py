@@ -31,9 +31,9 @@ def file_info(path: Path) -> Tuple[bool, str, str]:
 
 
 def build_link(label: str, href: str, exists: bool, hint: str = "") -> str:
-    state = "online" if exists else "no generado"
+    state = "ready" if exists else "not generated"
     color = "#10b981" if exists else "#f59e0b"
-    action = f'<a class="link" href="{href}" target="_blank" rel="noreferrer">Abrir</a>' if exists else f'<div class="hint">{hint or "Genera el mapa para habilitar el enlace"}</div>'
+    action = f'<a class="link" href="{href}" target="_blank" rel="noreferrer">Open</a>' if exists else f'<div class="hint">{hint or "Generate the map to enable the link"}</div>'
     return f"""
     <div class="card">
       <div class="card-title">{label}</div>
@@ -48,7 +48,7 @@ def build_file(label: str, path: Path) -> str:
     return f"""
     <div class="file-row">
       <div class="file-name">{label}</div>
-      <div class="file-meta">{'disponible' if exists else 'no encontrado'} · {mtime} · {size}</div>
+      <div class="file-meta">{'available' if exists else 'missing'} | {mtime} | {size}</div>
     </div>
     """
 
@@ -71,7 +71,7 @@ def load_current_rows(path: Path, limit: int = 20) -> List[dict]:
 
 def build_table(rows: List[dict]) -> str:
     if not rows:
-        return '<div class="muted">Sin datos actuales.</div>'
+        return '<div class="muted">No current data available.</div>'
 
     headers = ["icao", "flight", "altitude_ft", "speed_kts", "heading_deg", "lat", "lon", "timestamp_utc"]
     header_html = "".join(f"<th>{h}</th>" for h in headers)
@@ -91,7 +91,7 @@ def build_table(rows: List[dict]) -> str:
 def db_stats() -> Tuple[str, str]:
     db_url = os.getenv("ADSB_DB_URL")
     if not db_url:
-        return ("demo (sin URL)", "#f59e0b")
+        return ("demo mode (ADSB_DB_URL not set)", "#f59e0b")
     try:
         import psycopg2  # type: ignore
 
@@ -102,9 +102,9 @@ def db_stats() -> Tuple[str, str]:
                 cur.execute("SELECT MAX(ts) FROM positions;")
                 latest = cur.fetchone()[0]
                 latest_txt = latest.isoformat() if latest else "n/a"
-                return (f"configurado · {count} posiciones · última {latest_txt}", "#10b981")
+                return (f"connected | {count} positions | latest {latest_txt}", "#10b981")
     except Exception:
-        return ("no accesible", "#ef4444")
+        return ("unreachable", "#ef4444")
 
 
 def main() -> None:
@@ -118,10 +118,10 @@ def main() -> None:
     # Maps
     sections.append(f"""
     <section>
-      <h2>Mapas</h2>
+      <h2>Maps</h2>
       <div class="grid">
-        {build_link("Mapa actual (auto)", current_map.name, current_map.exists())}
-        {build_link("Mapa histórico", historical_map.name, historical_map.exists())}
+        {build_link("Live map (auto-refresh)", current_map.name, current_map.exists())}
+        {build_link("Historical map", historical_map.name, historical_map.exists())}
       </div>
     </section>
     """)
@@ -129,9 +129,9 @@ def main() -> None:
     # Data files
     sections.append(f"""
     <section>
-      <h2>Datos</h2>
-      {build_file("CSV actual", current_csv)}
-      {build_file("CSV histórico", history_csv)}
+      <h2>Data</h2>
+      {build_file("Current CSV", current_csv)}
+      {build_file("Historical CSV", history_csv)}
     </section>
     """)
 
@@ -139,8 +139,8 @@ def main() -> None:
     rows = load_current_rows(current_csv, limit=20)
     sections.append(f"""
     <section>
-      <h2>Tráfico actual (CSV)</h2>
-      <div class="muted">Muestra los primeros {min(20, len(rows)) if rows else 0} registros de {current_csv.name}.</div>
+      <h2>Live traffic (CSV)</h2>
+      <div class="muted">Showing the first {min(20, len(rows)) if rows else 0} rows from {current_csv.name}.</div>
       {build_table(rows)}
     </section>
     """)
@@ -149,7 +149,7 @@ def main() -> None:
     db_status, db_color = db_stats()
     sections.append(f"""
     <section>
-      <h2>Base de datos</h2>
+      <h2>Database</h2>
       <div class="file-row">
         <div class="file-name">ADSB_DB_URL</div>
         <div class="file-meta" style="color:{db_color};">{db_status}</div>
@@ -159,7 +159,7 @@ def main() -> None:
 
     html = f"""
 <!doctype html>
-<html lang="es">
+<html lang="en">
 <head>
   <meta charset="utf-8" />
   <title>ADS-B Portal</title>
@@ -270,7 +270,7 @@ def main() -> None:
           tbody.appendChild(tr);
         }}
         const countEl = document.getElementById('live-count');
-        if (countEl) countEl.textContent = 'Mostrando ' + Math.min(rows.length, maxRows) + ' de ' + rows.length + ' registros';
+        if (countEl) countEl.textContent = 'Showing ' + Math.min(rows.length, maxRows) + ' of ' + rows.length + ' records';
       }} catch (e) {{
         console.log('Refresh failed', e);
       }}
@@ -282,7 +282,7 @@ def main() -> None:
 <body>
   <div class="container">
     <h1>ADS-B Portal</h1>
-    <div class="muted">Selecciona la vista o comprueba el estado de los datos.</div>
+    <div class="muted">Pick the view you want or check data availability.</div>
     {''.join(sections)}
   </div>
 </body>
@@ -291,7 +291,7 @@ def main() -> None:
 
     portal_path = OUTPUT_DIR / "index.html"
     portal_path.write_text(html, encoding="utf-8")
-    print(f"Portal generado en {portal_path}")
+    print(f"Portal generated at {portal_path}")
 
 
 if __name__ == "__main__":

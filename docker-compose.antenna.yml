@@ -1,0 +1,15 @@
+version: "3.9"
+
+services:
+  adsb_sender:
+    build:
+      context: .
+      dockerfile: Dockerfile.sender
+    environment:
+      # Point to the central API ingest endpoint (override via env or .env file)
+      ADSB_INGEST_URL: ${ADSB_INGEST_URL:-http://SERVER_IP:8000/api/ingest}
+      # Local dump1090 feed on the antenna host
+      ADSB_HOST: 127.0.0.1
+      ADSB_PORT: 30003
+    network_mode: host  # For Linux; see README for Docker Desktop adjustments
+    restart: unless-stopped

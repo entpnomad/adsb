@@ -25,6 +25,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from pydantic import BaseModel, Field, validator
+
 from src.lib.config import AIRCRAFT_DB_FILE
 
 try:
@@ -104,6 +106,27 @@ def ensure_aircraft_db() -> None:
 # Ensure DB file exists so icon/type enrichment works when available
 ensure_aircraft_db()
 
+
+class PositionIn(BaseModel):
+    icao: str = Field(..., min_length=3, max_length=6, description="ICAO hex code")
+    flight: str | None = Field(None, max_length=8)
+    lat: float | None = None
+    lon: float | None = None
+    altitude_ft: float | None = None
+    speed_kts: float | None = None
+    heading_deg: float | None = None
+    squawk: str | None = Field(None, max_length=8)
+    ts: datetime | None = None
+
+    @validator("icao")
+    def normalize_icao(cls, v: str) -> str:
+        return v.strip().upper()
+
+
+class IngestPayload(BaseModel):
+    positions: list[PositionIn]
+
+
 @app.get("/api/health")
 def health():
     return {"status": "ok", "time": datetime.utcnow().isoformat()}
@@ -160,6 +183,53 @@ def history(icao: str, hours: Optional[int] = 6) -> dict:
     if not rows:
         raise HTTPException(status_code=404, detail="ICAO not found in window")
     return {"icao": icao.upper(), "count": len(rows), "positions": [enrich(r) for r in rows]}
+
+
+@app.post("/api/ingest")
+def ingest(payload: IngestPayload):
+    """Ingest positions (typically from remote senders) into Postgres."""
+    if not payload.positions:
+        return {"ingested": 0}
+
+    rows = []
+    now = datetime.now(timezone.utc)
+    for pos in payload.positions:
+        if pos.lat is None or pos.lon is None:
+            continue
+        ts = pos.ts or now
+        rows.append(
+            (
+                pos.icao,
+                pos.flight,
+                ts,
+                pos.lat,
+                pos.lon,
+                pos.altitude_ft,
+                pos.speed_kts,
+                pos.heading_deg,
+                pos.squawk,
+            )
+        )
+
+    if not rows:
+        return {"ingested": 0}
+
+    try:
+        with psycopg2.connect(DB_URL) as conn:
+            with conn.cursor() as cur:
+                cur.executemany(
+                    """
+                    INSERT INTO positions (icao, flight, ts, lat, lon, altitude_ft, speed_kts, heading_deg, squawk)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    rows,
+                )
+            conn.commit()
+    except Exception as exc:
+        logger.error("Ingest failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Ingest failed")
+
+    return {"ingested": len(rows)}
 
 
 @app.get("/map")

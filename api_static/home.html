@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="es">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -29,15 +29,15 @@
     <div class="hero">
       <h1>ADS-B Portal</h1>
       <div class="muted">
-        Stack para recibir el stream de dump1090, almacenarlo en Postgres y visualizarlo vía API + mapa web.
-        Flujo: dump1090 → colector (adsb_sender) → Postgres → API → mapa en el navegador.
+        Stack to receive dump1090 traffic, store it in Postgres, and expose it through an API plus a live map.
+        Flow: dump1090 ? sender (adsb_sender) ? Postgres ? API ? browser map.
       </div>
     </div>
     <div class="grid">
       <div class="card">
-        <h2>Mapa en vivo</h2>
-        <p>Visualización directa desde la API (refresco automático).</p>
-        <a class="btn" href="/map">Abrir mapa</a>
+        <h2>Live map</h2>
+        <p>Direct visualization from the API (auto-refresh enabled).</p>
+        <a class="btn" href="/map">Open map</a>
       </div>
       <div class="card">
         <h2>API</h2>
@@ -46,20 +46,18 @@
         <a class="btn secondary" style="margin-top:6px;" href="/api/health" target="_blank">Health</a>
       </div>
       <div class="card">
-        <h2>Cómo funciona</h2>
-        <p>
-          Servicios en este compose:
-        </p>
+        <h2>How it works</h2>
+        <p>Services in this compose stack:</p>
         <ul class="list">
-          <li><strong>postgres</strong>: almacena posiciones (tabla positions) y metadatos (aircraft).</li>
-          <li><strong>adsb_sender</strong>: colector remoto (lee dump1090 y envía a Postgres).</li>
-          <li><strong>adsb_view_db</strong>: API + mapa (consume Postgres).</li>
+          <li><strong>postgres</strong>: stores positions (table positions) and metadata (aircraft).</li>
+          <li><strong>adsb_sender</strong>: remote collector (reads dump1090 and writes to Postgres).</li>
+          <li><strong>adsb_view_db</strong>: API + map (reads from Postgres).</li>
         </ul>
-        <p class="muted">Estado de servicios y streamers (IA puro):</p>
+        <p class="muted">Service and streamer status (best-effort):</p>
         <ul class="list" id="status-list">
-          <li>API: comprobando...</li>
-          <li>DB: comprobando...</li>
-          <li>Streamers conectados: n/d</li>
+          <li>API: checking...</li>
+          <li>DB: checking...</li>
+          <li>Connected streamers: n/a</li>
         </ul>
       </div>
     </div>
@@ -80,11 +78,11 @@
         if (db.ok) {
           const data = await db.json();
           const uniq = new Set(data.map(x => x.icao));
-          list.children[2].textContent = `Streamers conectados (ICAO únicos últimos 60s): ${uniq.size}`;
+          list.children[2].textContent = `Connected streamers (unique ICAO last 60s): ${uniq.size}`;
         }
       } catch (e) {
         list.children[1].textContent = 'DB: Error';
-        list.children[2].textContent = 'Streamers: n/d';
+        list.children[2].textContent = 'Streamers: n/a';
       }
     }
     updateStatus();

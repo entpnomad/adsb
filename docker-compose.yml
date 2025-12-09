@@ -19,120 +19,7 @@ services:
       timeout: 5s
       retries: 5
 
-  adsb_app:
-    image: python:3.11-slim
-    container_name: adsb_app_simulate
-    depends_on:
-      postgres:
-        condition: service_healthy
-    working_dir: /app
-    volumes:
-      - ./:/app
-    environment:
-      ADSB_DB_URL: postgresql://adsb:adsb@postgres:5432/adsb
-    command: >
-      bash -lc "
-      pip install --no-cache-dir -r requirements.txt &&
-      python adsb_cli.py db --simulate 300 &&
-      tail -f /dev/null
-      "
-
-  adsb_app_from_csv:
-    image: python:3.11-slim
-    container_name: adsb_app_from_csv
-    depends_on:
-      postgres:
-        condition: service_healthy
-    working_dir: /app
-    volumes:
-      - ./:/app
-    environment:
-      ADSB_DB_URL: postgresql://adsb:adsb@postgres:5432/adsb
-    command: >
-      bash -lc "
-      pip install --no-cache-dir -r requirements.txt &&
-      python adsb_cli.py db --from-csv output/adsb_history.csv &&
-      tail -f /dev/null
-      "
-
-  adsb_app_stream:
-    image: python:3.11-slim
-    container_name: adsb_app_stream
-    depends_on:
-      postgres:
-        condition: service_healthy
-      dump1090_sim:
-        condition: service_started
-    working_dir: /app
-    volumes:
-      - ./:/app
-    environment:
-      ADSB_DB_URL: postgresql://adsb:adsb@postgres:5432/adsb
-      ADSB_HOST: dump1090_sim
-      ADSB_PORT: 30003
-    command: >
-      bash -lc "
-      pip install --no-cache-dir -r requirements.txt &&
-      python adsb_cli.py db --stream &&
-      tail -f /dev/null
-      "
-
-  dump1090_sim:
-    image: python:3.11-slim
-    container_name: dump1090_sim
-    working_dir: /app
-    volumes:
-      - ./:/app
-    ports:
-      - "30003:30003"
-    command: >
-      bash -lc "
-      pip install --no-cache-dir -r requirements.txt &&
-      python simulate_stream.py
-      "
-
-  adsb_map_live:
-    image: python:3.11-slim
-    container_name: adsb_map_live
-    working_dir: /app
-    volumes:
-      - ./:/app
-    ports:
-      - "8000:8000"
-    command: >
-      bash -lc "
-        set -e
-        python -m pip install --no-cache-dir -r requirements.txt
-        echo 'starting collector...'
-        (python adsb_cli.py csv --host ${ADSB_HOST:-127.0.0.1} --port ${ADSB_PORT:-30003}) &
-        sleep 3
-        echo 'starting watch_map...'
-        (python watch_map.py --csv output/adsb_current.csv --output output/adsb_current_map.html --interval 2) &
-        python portal.py
-        exec python serve_map.py --host 0.0.0.0 --port 8000
-      "
-
-  adsb_map_demo:
-    image: python:3.11-slim
-    container_name: adsb_map_demo
-    working_dir: /app
-    volumes:
-      - ./:/app
-    ports:
-      - "8000:8000"
-    environment:
-      ADSB_DB_URL: postgresql://adsb:adsb@postgres:5432/adsb
-    command: >
-      bash -lc "
-      pip install --no-cache-dir -r requirements.txt &&
-      python -c \"from adsb_to_db import simulate_to_csv; simulate_to_csv(total_positions=300)\" &&
-      python plot_map.py --csv output/adsb_current.csv --output output/adsb_current_map.html &&
-      python plot_map.py --historical --output output/adsb_map.html &&
-      python portal.py &&
-      python serve_map.py --host 0.0.0.0 --port 8000
-      "
-
-# Visualizador en vivo leyendo desde la base de datos (sin simulador)
+# Live viewer/API backed by Postgres
   adsb_view_db:
     image: python:3.11-slim
     container_name: adsb_view_db
@@ -152,17 +39,6 @@ services:
         python -m pip install --no-cache-dir -r requirements.txt
         exec uvicorn api_main:app --host 0.0.0.0 --port 8000
       "
-
-# Sender service for a remote antenna (builds from Dockerfile.sender)
-  adsb_sender:
-    build:
-      context: .
-      dockerfile: Dockerfile.sender
-    environment:
-      ADSB_DB_URL: postgresql://adsb:adsb@79.112.93.58:5432/adsb
-      ADSB_HOST: 127.0.0.1
-      ADSB_PORT: 30003
-    network_mode: host
 
 volumes:
   adsb_pgdata:
