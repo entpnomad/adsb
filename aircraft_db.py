@@ -3,7 +3,7 @@
 Aircraft database lookup for ADS-B visualization.
 
 Maps ICAO hex codes to aircraft types and determines appropriate icons.
-Uses the tar1090 aircraft database (CSV format).
+Uses the tar1090 aircraft database (CSV format) and icon mappings.
 
 Usage:
     # As a module
@@ -19,168 +19,440 @@ from typing import Dict, Optional
 
 from src.lib.config import AIRCRAFT_DB_FILE
 
-# Aircraft type categories for icon selection (matching SVG filenames in assets/icons/)
-ICON_AIRLINER = "plane"
-ICON_HELICOPTER = "helicopter"
-ICON_GLIDER = "glider"
-ICON_LIGHT = "light"
-ICON_UNKNOWN = "plane"
+# Default icon for unknown aircraft
+ICON_UNKNOWN = "unknown"
 
-# Type designator patterns that indicate aircraft category
-# Based on ICAO type designators
-
-HELICOPTER_TYPES = {
-    # Airbus Helicopters
-    'AS35', 'AS50', 'AS55', 'AS65', 'EC20', 'EC25', 'EC30', 'EC35', 'EC45',
-    'EC55', 'EC75', 'EC13', 'EC15', 'EC63', 'EC65', 'H120', 'H125',
-    'H130', 'H135', 'H145', 'H155', 'H160', 'H175', 'H215', 'H225',
-    # Bell
-    'B06', 'B06T', 'B105', 'B204', 'B205', 'B206', 'B209', 'B212', 'B214',
-    'B222', 'B230', 'B407', 'B412', 'B429', 'B430', 'B505', 'B525',
-    # Robinson
-    'R22', 'R44', 'R66',
-    # Sikorsky
-    'S55', 'S58', 'S61', 'S64', 'S65', 'S70', 'S76', 'S92',
-    # Leonardo/AgustaWestland
-    'A109', 'A119', 'A139', 'A149', 'A169', 'A189', 'AW09', 'AW10', 'AW13',
-    'AW16', 'AW18', 'AW19',
-    # MD Helicopters
-    'MD52', 'MD60', 'MD90', 'EXPL', 'NOTR',
-    # Eurocopter (older designations)
-    'BK17', 'BO10', 'GAZL', 'LAMA', 'PUMA', 'SA31', 'SA34', 'SA36', 'SA37',
-    # Generic
-    'HELI', 'GYRO',
+# Type designator to icon mapping - from tar1090 markers.js
+# Maps ICAO type designators (e.g., "B738") directly to icon names
+TYPE_DESIGNATOR_ICONS = {
+    'A10': 'a10',
+    'A124': 'b707',
+    'A139': 's61',
+    'A148': 'airliner',
+    'A149': 's61',
+    'A169': 's61',
+    'A189': 's61',
+    'A19N': 'a319',
+    'A20J': 'glider',
+    'A20N': 'a320',
+    'A21N': 'a321',
+    'A225': 'a225',
+    'A3': 'hi_perf',
+    'A306': 'heavy_2e',
+    'A318': 'a319',
+    'A319': 'a319',
+    'A320': 'a320',
+    'A321': 'a321',
+    'A32E': 'glider',
+    'A32P': 'glider',
+    'A330': 'a332',
+    'A332': 'a332',
+    'A333': 'a332',
+    'A337': 'beluga',
+    'A338': 'a332',
+    'A339': 'a332',
+    'A33E': 'glider',
+    'A33P': 'glider',
+    'A34E': 'glider',
+    'A359': 'a359',
+    'A35K': 'a359',
+    'A37': 'hi_perf',
+    'A388': 'a380',
+    'A3ST': 'beluga',
+    'A4': 'md_a4',
+    'A400': 'a400',
+    'A6': 'hi_perf',
+    'A700': 'hi_perf',
+    'AJET': 'alpha_jet',
+    'ALO2': 'gazelle',
+    'ALO3': 'gazelle',
+    'ARCE': 'glider',
+    'ARCP': 'glider',
+    'AS14': 'glider',
+    'AS16': 'glider',
+    'AS20': 'glider',
+    'AS21': 'glider',
+    'AS22': 'glider',
+    'AS24': 'glider',
+    'AS25': 'glider',
+    'AS26': 'glider',
+    'AS28': 'glider',
+    'AS29': 'glider',
+    'AS30': 'glider',
+    'AS31': 'glider',
+    'AS32': 'puma',
+    'AS3B': 'puma',
+    'AS50': 'gazelle',
+    'AS55': 'gazelle',
+    'AS65': 'dauphin',
+    'ASTR': 'jet_nonswept',
+    'AT3': 'hi_perf',
+    'B1': 'b1b_lancer',
+    'B17': 'lancaster',
+    'B29': 'lancaster',
+    'B37M': 'b737',
+    'B38M': 'b738',
+    'B39M': 'b739',
+    'B3XM': 'b739',
+    'B461': 'b707',
+    'B462': 'b707',
+    'B463': 'b707',
+    'B52': 'b52',
+    'B609': 'v22_slow',
+    'B609F': 'v22_fast',
+    'B701': 'b707',
+    'B703': 'b707',
+    'B712': 'jet_swept',
+    'B721': 'jet_swept',
+    'B722': 'jet_swept',
+    'B731': 'b737',
+    'B732': 'b737',
+    'B733': 'b737',
+    'B734': 'b737',
+    'B735': 'b737',
+    'B736': 'b737',
+    'B737': 'b737',
+    'B738': 'b738',
+    'B739': 'b739',
+    'B741': 'heavy_4e',
+    'B742': 'heavy_4e',
+    'B743': 'heavy_4e',
+    'B744': 'heavy_4e',
+    'B748': 'heavy_4e',
+    'B74D': 'heavy_4e',
+    'B74R': 'heavy_4e',
+    'B74S': 'heavy_4e',
+    'B752': 'heavy_2e',
+    'B753': 'heavy_2e',
+    'B772': 'heavy_2e',
+    'B773': 'heavy_2e',
+    'B77L': 'heavy_2e',
+    'B77W': 'heavy_2e',
+    'BALL': 'balloon',
+    'BCS1': 'airliner',
+    'BCS3': 'airliner',
+    'BE20': 'twin_large',
+    'BE40': 'jet_nonswept',
+    'BLCF': 'heavy_4e',
+    'BSCA': 'heavy_4e',
+    'C130': 'c130',
+    'C17': 'c17',
+    'C2': 'c2',
+    'C25A': 'jet_nonswept',
+    'C25B': 'jet_nonswept',
+    'C25C': 'jet_nonswept',
+    'C30J': 'c130',
+    'C501': 'jet_nonswept',
+    'C510': 'jet_nonswept',
+    'C525': 'jet_nonswept',
+    'C550': 'jet_nonswept',
+    'C560': 'jet_nonswept',
+    'C56X': 'jet_nonswept',
+    'C5M': 'c5',
+    'C650': 'jet_nonswept',
+    'C680': 'jet_swept',
+    'C68A': 'jet_swept',
+    'C750': 'jet_swept',
+    'C97': 'super_guppy',
+    'CKUO': 'hi_perf',
+    'CL30': 'jet_swept',
+    'CL35': 'jet_swept',
+    'CL60': 'jet_swept',
+    'CRJ1': 'jet_swept',
+    'CRJ2': 'jet_swept',
+    'CRJ7': 'jet_swept',
+    'CRJ9': 'jet_swept',
+    'CRJX': 'jet_swept',
+    'DC10': 'md11',
+    'DC91': 'jet_swept',
+    'DC92': 'jet_swept',
+    'DC93': 'jet_swept',
+    'DC94': 'jet_swept',
+    'DC95': 'jet_swept',
+    'DG1T': 'glider',
+    'DG80': 'glider',
+    'DISC': 'glider',
+    'DLTA': 'verhees',
+    'DRON': 'uav',
+    'DUOD': 'glider',
+    'E135': 'jet_swept',
+    'E145': 'jet_swept',
+    'E170': 'airliner',
+    'E190': 'airliner',
+    'E195': 'airliner',
+    'E2': 'c2',
+    'E290': 'airliner',
+    'E295': 'airliner',
+    'E35L': 'jet_swept',
+    'E390': 'e390',
+    'E3CF': 'e3awacs',
+    'E3TF': 'e3awacs',
+    'E45X': 'jet_swept',
+    'E50P': 'jet_nonswept',
+    'E55P': 'jet_nonswept',
+    'E737': 'e737',
+    'E75L': 'airliner',
+    'E75S': 'airliner',
+    'EA50': 'jet_nonswept',
+    'EC25': 's61',
+    'EC55': 's61',
+    'EC75': 's61',
+    'EH10': 's61',
+    'EMER': 'ground_emergency',
+    'EUFI': 'typhoon',
+    'F1': 'hi_perf',
+    'F100': 'jet_swept',
+    'F104': 't38',
+    'F111': 'hi_perf',
+    'F117': 'hi_perf',
+    'F14': 'hi_perf',
+    'F15': 'md_f15',
+    'F16': 'hi_perf',
+    'F18': 'f18',
+    'F18H': 'f18',
+    'F18S': 'f18',
+    'F22': 'f35',
+    'F22A': 'f35',
+    'F28': 'jet_swept',
+    'F2TH': 'jet_swept',
+    'F35': 'f35',
+    'F4': 'hi_perf',
+    'F5': 'f5_tiger',
+    'F70': 'jet_swept',
+    'F900': 'jet_swept',
+    'FA10': 'jet_nonswept',
+    'FA20': 'jet_swept',
+    'FA50': 'jet_swept',
+    'FA7X': 'jet_swept',
+    'FA8X': 'jet_swept',
+    'FOUG': 'm326',
+    'G150': 'jet_nonswept',
+    'G200': 'jet_swept',
+    'G280': 'jet_swept',
+    'GA5C': 'jet_swept',
+    'GA6C': 'jet_swept',
+    'GA7C': 'jet_swept',
+    'GA8C': 'jet_swept',
+    'GAZL': 'gazelle',
+    'GL5T': 'jet_swept',
+    'GL6T': 'jet_swept',
+    'GL7T': 'jet_swept',
+    'GLEX': 'jet_swept',
+    'GLF2': 'jet_swept',
+    'GLF3': 'jet_swept',
+    'GLF4': 'jet_swept',
+    'GLF5': 'jet_swept',
+    'GLF6': 'jet_swept',
+    'GLID': 'glider',
+    'GND': 'ground_unknown',
+    'GRND': 'ground_unknown',
+    'GYRO': 'gyrocopter',
+    'H160': 's61',
+    'H25A': 'jet_nonswept',
+    'H25B': 'jet_nonswept',
+    'H25C': 'jet_nonswept',
+    'H46': 'chinook',
+    'H47': 'chinook',
+    'H53': 's61',
+    'H53S': 's61',
+    'H60': 'blackhawk',
+    'H64': 'apache',
+    'HA4T': 'jet_swept',
+    'HAWK': 'bae_hawk',
+    'HDJT': 'jet_nonswept',
+    'HRON': 'uav',
+    'HUNT': 'hunter',
+    'IL62': 'il_62',
+    'J328': 'airliner',
+    'J8A': 'hi_perf',
+    'J8B': 'hi_perf',
+    'JANU': 'glider',
+    'JH7': 'hi_perf',
+    'K35E': 'b707',
+    'K35R': 'b707',
+    'KFIR': 'mirage',
+    'L159': 'l159',
+    'L39': 'l159',
+    'LANC': 'lancaster',
+    'LEOP': 'hi_perf',
+    'LJ23': 'jet_nonswept',
+    'LJ24': 'jet_nonswept',
+    'LJ25': 'jet_nonswept',
+    'LJ28': 'jet_nonswept',
+    'LJ31': 'jet_nonswept',
+    'LJ35': 'jet_nonswept',
+    'LJ40': 'jet_nonswept',
+    'LJ45': 'jet_nonswept',
+    'LJ55': 'jet_nonswept',
+    'LJ60': 'jet_nonswept',
+    'LJ70': 'jet_nonswept',
+    'LJ75': 'jet_nonswept',
+    'LJ85': 'jet_nonswept',
+    'LK17': 'glider',
+    'LK19': 'glider',
+    'LK20': 'glider',
+    'LR35': 'jet_nonswept',
+    'LR45': 'jet_nonswept',
+    'LS10': 'glider',
+    'LS8': 'glider',
+    'LS9': 'glider',
+    'LTNG': 'hi_perf',
+    'M326': 'm326',
+    'M339': 'm326',
+    'M346': 'hi_perf',
+    'MD11': 'md11',
+    'MD80': 'jet_swept',
+    'MD81': 'jet_swept',
+    'MD82': 'jet_swept',
+    'MD83': 'jet_swept',
+    'MD87': 'jet_swept',
+    'MD88': 'jet_swept',
+    'MD90': 'jet_swept',
+    'ME62': 'hi_perf',
+    'METR': 'hi_perf',
+    'MG19': 'hi_perf',
+    'MG25': 'hi_perf',
+    'MG29': 'hi_perf',
+    'MG31': 'hi_perf',
+    'MG44': 'hi_perf',
+    'MI24': 'mil24',
+    'MIR2': 'mirage',
+    'MIR4': 'hi_perf',
+    'MRF1': 'miragef1',
+    'MT2': 'hi_perf',
+    'NH90': 'blackhawk',
+    'NIMB': 'glider',
+    'P3': 'p3_orion',
+    'P8': 'p8',
+    'PA24': 'pa24',
+    'PARA': 'para',
+    'PK20': 'glider',
+    'PRM1': 'jet_nonswept',
+    'PRTS': 'rutan_veze',
+    'PUMA': 'puma',
+    'Q1': 'uav',
+    'Q25': 'uav',
+    'Q4': 'uav',
+    'Q5': 'hi_perf',
+    'Q9': 'uav',
+    'QINT': 'glider',
+    'R22': 'helicopter',
+    'R44': 'helicopter',
+    'R66': 'helicopter',
+    'RFAL': 'rafale',
+    'RJ1H': 'b707',
+    'RJ70': 'b707',
+    'RJ85': 'b707',
+    'S10S': 'glider',
+    'S12': 'glider',
+    'S12S': 'glider',
+    'S22T': 'cirrus_sr22',
+    'S3': 'hi_perf',
+    'S37': 'hi_perf',
+    'S6': 'glider',
+    'S61': 's61',
+    'S61R': 's61',
+    'S76': 'dauphin',
+    'S92': 'blackhawk',
+    'SB39': 'sb39',
+    'SERV': 'ground_service',
+    'SF50': 'jet_nonswept',
+    'SGUP': 'super_guppy',
+    'SHIP': 'blimp',
+    'SLCH': 'strato',
+    'SR20': 'cirrus_sr22',
+    'SR22': 'cirrus_sr22',
+    'SR71': 'hi_perf',
+    'SU15': 'hi_perf',
+    'SU24': 'hi_perf',
+    'SU25': 'hi_perf',
+    'SU27': 'hi_perf',
+    'T154': 'jet_swept',
+    'T2': 'hi_perf',
+    'T22M': 'hi_perf',
+    'T33': 'm326',
+    'T37': 'hi_perf',
+    'T38': 't38',
+    'T4': 'hi_perf',
+    'TIGR': 'tiger',
+    'TOR': 'tornado',
+    'TS1J': 'glider',
+    'TU22': 'hi_perf',
+    'TWR': 'ground_tower',
+    'U2': 'u2',
+    'V22': 'v22_slow',
+    'V22F': 'v22_fast',
+    'VAUT': 'hi_perf',
+    'VELO': 'rutan_veze',
+    'VENT': 'glider',
+    'VEZE': 'rutan_veze',
+    'VF35': 'f35',
+    'VNTE': 'glider',
+    'WB57': 'wb57',
+    'WHK2': 'strato',
+    'Y130': 'hi_perf',
+    'YK28': 'hi_perf',
+    'YK40': 'jet_swept',
 }
 
-GLIDER_TYPES = {
-    'GLID', 'GL', 'ASW', 'ASK', 'ASH', 'DG', 'LS', 'SZD', 'PIK', 'PW5',
-    'NIMB', 'DISC', 'VENT', 'JANT', 'ARCX', 'DUO', 'ARCS',
-    'SLIN', 'GRAB', 'GLAS', 'SPER', 'STEM', 'G102', 'G103', 'G109',
-    'ULAC',
-}
-
-AIRLINER_TYPES = {
-    # Airbus
-    'A10', 'A19', 'A20', 'A21', 'A30', 'A31', 'A32', 'A33', 'A34', 'A35',
-    'A38', 'A318', 'A319', 'A320', 'A321', 'A330', 'A340', 'A350', 'A380',
-    # Boeing
-    'B70', 'B71', 'B72', 'B73', 'B74', 'B75', 'B76', 'B77', 'B78',
-    'B701', 'B703', 'B712', 'B720', 'B721', 'B722', 'B731', 'B732', 'B733',
-    'B734', 'B735', 'B736', 'B737', 'B738', 'B739', 'B741', 'B742', 'B743',
-    'B744', 'B748', 'B752', 'B753', 'B762', 'B763', 'B764', 'B772', 'B773',
-    'B77L', 'B77W', 'B788', 'B789', 'B78X',
-    # Embraer
-    'E70', 'E75', 'E90', 'E95', 'E170', 'E175', 'E190', 'E195', 'E290', 'E295',
-    # Bombardier
-    'CRJ', 'CRJ1', 'CRJ2', 'CRJ7', 'CRJ9', 'CRJX', 'BCS1', 'BCS3',
-    # ATR
-    'AT43', 'AT45', 'AT72', 'AT75', 'AT76', 'ATR',
-    # Other
-    'DH8', 'DHC8', 'MD80', 'MD81', 'MD82', 'MD83', 'MD87', 'MD88', 'MD90',
-    'DC9', 'DC10', 'MD11', 'L101', 'F100', 'F70', 'BAE1', 'RJ', 'AVRO',
-    'AN24', 'AN26', 'IL76', 'IL96', 'TU15', 'TU20', 'TU21', 'TU22',
-}
-
-# Business jets / Private jets - checked BEFORE light aircraft
-BUSINESS_JET_TYPES = {
-    # Cessna Citation series
-    'C500', 'C501', 'C510', 'C525', 'C526', 'C528', 'C550', 'C551', 'C560',
-    'C56X', 'C680', 'C68A', 'C700', 'C750', 'CJ1', 'CJ2', 'CJ3', 'CJ4',
-    'C25A', 'C25B', 'C25C', 'C25M',
-    # Learjet
-    'LJ23', 'LJ24', 'LJ25', 'LJ28', 'LJ31', 'LJ35', 'LJ36', 'LJ40', 'LJ45',
-    'LJ55', 'LJ60', 'LJ70', 'LJ75',
-    # Gulfstream
-    'G100', 'G150', 'G200', 'G280', 'G350', 'G400', 'G450', 'G500', 'G550',
-    'G600', 'G650', 'G700', 'G800', 'GALX', 'GAL5', 'GLF2', 'GLF3', 'GLF4',
-    'GLF5', 'GLF6', 'GLEX',
-    # Bombardier Global/Challenger
-    'GL5T', 'GL7T', 'GLEX', 'CL30', 'CL35', 'CL60', 'CL65', 'BD10',
-    'BD70', 'ASTR', 'G280',
-    # Dassault Falcon
-    'F900', 'F2TH', 'FA10', 'FA20', 'FA50', 'FA7X', 'FA8X', 'F6X',
-    'FALC', 'F90',
-    # Embraer business jets
-    'E35L', 'E50P', 'E55P', 'E545', 'E550', 'LEGA', 'PH10', 'PH30',
-    # Pilatus PC-24
-    'PC24',
-    # HondaJet
-    'HDJT',
-    # Beechcraft jets
-    'BE40', 'BE4W', 'PRM1', 'H25A', 'H25B', 'H25C', 'HA4T',
-    # Eclipse
-    'EA50',
-    # Cirrus Vision Jet
-    'SF50',
-}
-
-LIGHT_AIRCRAFT_PATTERNS = {
-    # Cessna
-    'C1', 'C2', 'C3', 'C4', 'C5', 'C6', 'C7', 'C8',
-    'C150', 'C152', 'C162', 'C170', 'C172', 'C175', 'C177', 'C180', 'C182',
-    'C185', 'C188', 'C190', 'C195', 'C206', 'C207', 'C208', 'C210', 'C303',
-    'C310', 'C336', 'C337', 'C340', 'C401', 'C402', 'C404', 'C411', 'C414',
-    'C421', 'C425', 'C441', 'C500', 'C501', 'C510', 'C525', 'C550', 'C560',
-    # Piper
-    'P28', 'PA18', 'PA22', 'PA23', 'PA24', 'PA27', 'PA28', 'PA30', 'PA31',
-    'PA32', 'PA34', 'PA38', 'PA44', 'PA46', 'PA60', 'PAY',
-    # Beechcraft
-    'B35', 'B36', 'B55', 'B58', 'B60', 'BE17', 'BE18', 'BE19', 'BE20',
-    'BE23', 'BE24', 'BE33', 'BE35', 'BE36', 'BE40', 'BE55', 'BE58', 'BE60',
-    'BE76', 'BE77', 'BE80', 'BE9', 'BE90', 'BE95', 'BE99',
-    # Cirrus
-    'SR20', 'SR22', 'SF50',
-    # Diamond
-    'DA20', 'DA40', 'DA42', 'DA50', 'DA62', 'DV20',
-    # Mooney
-    'M20',
-    # Other
-    'AA5', 'DR40', 'PA11', 'J3', 'RV', 'VANS', 'TOBA', 'TB', 'TB20', 'TB21',
-    'AQUI', 'SONI', 'RALL', 'ROBIN', 'CAP', 'EXTR',
+# Type description (L2J, H, etc.) to icon fallback - from tar1090
+# Used when type designator is not in the direct mapping
+TYPE_DESCRIPTION_ICONS = {
+    'A1P': 'cessna',
+    'A2P': 'twin_large',
+    'A2P-M': 'twin_large',
+    'A2T': 'twin_large',
+    'A2T-M': 'twin_large',
+    'G': 'gyrocopter',
+    'H': 'helicopter',
+    'L1J': 'hi_perf',
+    'L1J-L': 'jet_nonswept',
+    'L1P': 'cessna',
+    'L1T': 'single_turbo',
+    'L2J-H': 'heavy_2e',
+    'L2J-L': 'jet_nonswept',
+    'L2J-M': 'airliner',
+    'L2P': 'twin_small',
+    'L2T': 'twin_large',
+    'L2T-M': 'twin_large',
+    'L3J-H': 'md11',
+    'L4J': 'b707',
+    'L4J-H': 'b707',
+    'L4J-M': 'b707',
+    'L4T': 'c130',
+    'L4T-H': 'c130',
+    'L4T-M': 'c130',
 }
 
 
 def get_icon_for_type(type_code: str) -> str:
     """
     Determine the appropriate icon based on aircraft type designator.
+    Uses tar1090 TypeDesignatorIcons mapping with fallback logic.
 
     Args:
         type_code: ICAO aircraft type designator (e.g., "B738", "R44", "C172")
 
     Returns:
-        Icon name matching SVG filename (plane, helicopter, light, glider)
+        Icon name matching SVG filename in assets/icons/
     """
     if not type_code:
         return ICON_UNKNOWN
 
     type_upper = type_code.upper().strip()
 
-    # Check helicopters first (most specific)
-    for heli_type in HELICOPTER_TYPES:
-        if type_upper.startswith(heli_type) or type_upper == heli_type:
-            return ICON_HELICOPTER
+    # Direct lookup first
+    if type_upper in TYPE_DESIGNATOR_ICONS:
+        return TYPE_DESIGNATOR_ICONS[type_upper]
 
-    # Check gliders
-    for glider_type in GLIDER_TYPES:
-        if type_upper.startswith(glider_type) or type_upper == glider_type:
-            return ICON_GLIDER
+    # Try prefix matching for types like B737, B738, etc.
+    # Check progressively shorter prefixes
+    for prefix_len in range(len(type_upper) - 1, 2, -1):
+        prefix = type_upper[:prefix_len]
+        if prefix in TYPE_DESIGNATOR_ICONS:
+            return TYPE_DESIGNATOR_ICONS[prefix]
 
-    # Check business jets BEFORE light aircraft (Citations, Learjets, etc.)
-    for jet_type in BUSINESS_JET_TYPES:
-        if type_upper.startswith(jet_type) or type_upper == jet_type:
-            return ICON_AIRLINER
-
-    # Check airliners
-    for airliner_type in AIRLINER_TYPES:
-        if type_upper.startswith(airliner_type) or type_upper == airliner_type:
-            return ICON_AIRLINER
-
-    # Check light aircraft
-    for light_type in LIGHT_AIRCRAFT_PATTERNS:
-        if type_upper.startswith(light_type) or type_upper == light_type:
-            return ICON_LIGHT
-
-    # Default to airliner (most common in ADS-B)
+    # Fallback to unknown icon
     return ICON_UNKNOWN
 
 
@@ -282,7 +554,7 @@ class AircraftDatabase:
             icao_hex: 6-character ICAO hex code
 
         Returns:
-            Icon name (plane, helicopter, light, glider)
+            Icon name matching SVG file in assets/icons/
         """
         info = self.lookup(icao_hex)
 
@@ -315,7 +587,7 @@ def get_aircraft_icon(icao_hex: str) -> str:
         icao_hex: 6-character ICAO hex code
 
     Returns:
-        Icon name (plane, helicopter, light, glider)
+        Icon name matching SVG file in assets/icons/
     """
     db = get_database()
     return db.get_icon(icao_hex)

@@ -1,0 +1,5 @@
+<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
+    <!-- ground_square - from tar1090 -->
+    <path d="M 4,4 H 12 V 12 H 4 Z"
+          fill="{COLOR}" stroke="#000" stroke-width="0.8"/>
+</svg>

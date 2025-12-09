@@ -157,11 +157,11 @@ def calculate_headings_from_trajectory(positions: List[Dict[str, Any]], history_
 
 
 def load_svg_icons() -> Dict[str, str]:
-    """Load SVG icons from assets/icons/ directory."""
+    """Load all SVG icons from assets/icons/ directory dynamically."""
     svg_icons = {}
-    for icon_name in ["plane", "helicopter", "light", "glider"]:
-        svg_path = ICONS_DIR / f"{icon_name}.svg"
-        if svg_path.exists():
+    if ICONS_DIR.exists():
+        for svg_path in ICONS_DIR.glob("*.svg"):
+            icon_name = svg_path.stem  # filename without extension
             with open(svg_path, "r") as f:
                 svg_content = f.read().strip()
                 if 'width=' not in svg_content:
