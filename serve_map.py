@@ -11,27 +11,31 @@ Usage:
 
 import argparse
 import http.server
-import os
 import socketserver
 import sys
-from pathlib import Path
+
+from src.lib.config import OUTPUT_DIR
 
 
 class CORSRequestHandler(http.server.SimpleHTTPRequestHandler):
     """HTTP request handler with CORS headers."""
-    
+
+    def __init__(self, *args, **kwargs):
+        # Serve files from the output directory
+        super().__init__(*args, directory=str(OUTPUT_DIR), **kwargs)
+
     def end_headers(self):
         self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
         super().end_headers()
-    
+
     def do_OPTIONS(self):
         self.send_response(200)
         self.end_headers()
-    
+
     def log_message(self, format, *args):
-        # Suppress default logging, or customize as needed
+        # Suppress default logging for cleaner output
         pass
 
 
@@ -41,40 +45,21 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Serve on default port 8000
-  python3 serve_map.py
-
-  # Serve on custom port
-  python3 serve_map.py --port 8080
-
-  # Serve on all interfaces
-  python3 serve_map.py --host 0.0.0.0
+  python3 serve_map.py               # Serve on default port 8000
+  python3 serve_map.py --port 8080   # Serve on custom port
+  python3 serve_map.py --host 0.0.0.0  # Serve on all interfaces
         """
     )
-    
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=8000,
-        help="Port to serve on (default: 8000)"
-    )
-    
-    parser.add_argument(
-        "--host",
-        default="127.0.0.1",
-        help="Host to bind to (default: 127.0.0.1)"
-    )
-    
+
+    parser.add_argument("--port", type=int, default=8000, help="Port to serve on (default: 8000)")
+    parser.add_argument("--host", default="127.0.0.1", help="Host to bind to (default: 127.0.0.1)")
+
     args = parser.parse_args()
-    
-    # Change to the script directory to serve files from there
-    os.chdir(Path(__file__).parent)
-    
-    handler = CORSRequestHandler
-    
+
     try:
-        with socketserver.TCPServer((args.host, args.port), handler) as httpd:
-            print(f"Serving ADS-B map files at http://{args.host}:{args.port}")
+        with socketserver.TCPServer((args.host, args.port), CORSRequestHandler) as httpd:
+            print(f"Serving ADS-B map files from: {OUTPUT_DIR}")
+            print(f"Server running at http://{args.host}:{args.port}")
             print(f"Open http://{args.host}:{args.port}/adsb_map.html in your browser")
             print("Press Ctrl+C to stop")
             httpd.serve_forever()
@@ -91,4 +76,3 @@ Examples:
 
 if __name__ == "__main__":
     main()
-

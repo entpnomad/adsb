@@ -39,7 +39,7 @@ This geocodes your address, looks up the elevation, and saves it for distance ca
 
 ### 3. View the Map
 
-Open `adsb_map.html` in your browser. The map shows:
+Open `output/adsb_map.html` in your browser. The map shows:
 - Aircraft positions with type-specific icons
 - Color-coded by altitude
 - Trajectory lines showing flight paths
@@ -87,7 +87,7 @@ curl -o data/aircraft_db.csv https://raw.githubusercontent.com/wiedehopf/tar1090
 python3 plot_map.py
 
 # Current positions only (no historical data)
-python3 plot_map.py --csv adsb_current.csv
+python3 plot_map.py --csv output/adsb_current.csv
 
 # Historical positions only
 python3 plot_map.py --historical
@@ -121,13 +121,57 @@ export ADSB_HOME_ELEVATION_M=5
 **Terminal 2:** Auto-update maps
 ```bash
 # Update current map every second
-while true; do python3 plot_map.py --csv adsb_current.csv --output adsb_current_map.html; sleep 1; done
+while true; do python3 plot_map.py --csv output/adsb_current.csv --output output/adsb_current_map.html; sleep 1; done
 
 # Update main map every 2 seconds
-while true; do python3 plot_map.py --output adsb_map.html; sleep 2; done
+while true; do python3 plot_map.py --output output/adsb_map.html; sleep 2; done
 ```
 
 **Browser:** Open the HTML files - they auto-update via JavaScript polling.
+
+## Project Structure
+
+```
+adsb/
+├── adsb.sh              # Main entry script (starts dump1090 + logger)
+├── adsb_to_csv.py       # ADS-B to CSV logger
+├── plot_map.py          # Map visualization with all features
+├── aircraft_db.py       # Aircraft database lookup
+├── serve_map.py         # HTTP server for maps
+├── watch_map.py         # Auto-update map watcher
+├── README.md
+├── SPEC.md
+├── requirements.txt
+├── .gitignore
+│
+├── src/                 # Shared library code
+│   ├── __init__.py
+│   └── lib/
+│       ├── __init__.py
+│       ├── config.py    # Centralized paths and settings
+│       ├── geo.py       # Geocoding, elevation, distance
+│       └── colors.py    # Altitude color mapping
+│
+├── assets/              # Static assets
+│   └── icons/           # Aircraft SVG icons
+│       ├── plane.svg
+│       ├── helicopter.svg
+│       ├── light.svg
+│       └── glider.svg
+│
+├── output/              # Generated files (gitignored)
+│   ├── adsb_history.csv
+│   ├── adsb_current.csv
+│   ├── adsb_map.html
+│   ├── adsb_current_map.html
+│   └── *_data.json
+│
+├── config/              # User configuration (gitignored)
+│   └── home_location.json
+│
+└── data/                # Downloaded data (gitignored)
+    └── aircraft_db.csv
+```
 
 ## Map Features
 
@@ -177,8 +221,8 @@ Click any aircraft to see:
 | `DUMP1090_CMD` | `dump1090` | dump1090 command path |
 | `ADSB_HOST` | `127.0.0.1` | dump1090 host |
 | `ADSB_PORT` | `30003` | dump1090 SBS-1 port |
-| `ADSB_CSV_PATH` | `adsb_history.csv` | Historical positions file |
-| `ADSB_CURRENT_CSV_PATH` | `adsb_current.csv` | Current positions file |
+| `ADSB_CSV_PATH` | `output/adsb_history.csv` | Historical positions file |
+| `ADSB_CURRENT_CSV_PATH` | `output/adsb_current.csv` | Current positions file |
 | `ADSB_CURRENT_MAX_AGE_SECONDS` | `60` | Max age for "current" aircraft |
 | `ADSB_HOME_LAT` | - | Home latitude (optional) |
 | `ADSB_HOME_LON` | - | Home longitude (optional) |
@@ -186,7 +230,7 @@ Click any aircraft to see:
 
 ### Home Location File
 
-The `home_location.json` file (created by `--home-address`) stores:
+The `config/home_location.json` file (created by `--home-address`) stores:
 ```json
 {
   "address": "Your input address",
@@ -198,53 +242,20 @@ The `home_location.json` file (created by `--home-address`) stores:
 }
 ```
 
-## Project Structure
-
-```
-adsb/
-├── adsb.sh              # Main entry script (starts dump1090 + logger)
-├── adsb_to_csv.py       # ADS-B to CSV logger
-├── plot_map.py          # Map visualization with all features
-├── aircraft_db.py       # Aircraft database lookup
-├── serve_map.py         # HTTP server for maps
-├── watch_map.py         # Auto-update map watcher
-├── icons/               # Aircraft SVG icons
-│   ├── plane.svg        # Airliner icon
-│   ├── helicopter.svg   # Helicopter icon
-│   ├── light.svg        # Light aircraft icon
-│   └── glider.svg       # Glider icon
-├── data/                # Aircraft database (gitignored)
-│   └── aircraft_db.csv  # 500k+ aircraft records
-├── requirements.txt     # Python dependencies
-├── SPEC.md              # Detailed specification
-└── README.md            # This file
-```
-
-## Output Files
-
-| File | Description |
-|------|-------------|
-| `adsb_history.csv` | All position records (append-only) |
-| `adsb_current.csv` | Latest position per aircraft (rolling snapshot) |
-| `adsb_map.html` | Main map with historical trajectories |
-| `adsb_current_map.html` | Current aircraft only |
-| `*_data.json` | Position data for JavaScript updates |
-| `home_location.json` | Your configured home location |
-
 ## Troubleshooting
 
 ### No aircraft showing on map
 - Verify dump1090 is receiving signals (check its web interface)
 - Ensure you have ADS-B traffic in your area
-- Check that CSV files are being written: `tail -f adsb_history.csv`
+- Check that CSV files are being written: `tail -f output/adsb_history.csv`
 
 ### Aircraft icons not showing
-- Ensure the `icons/` directory exists with SVG files
+- Ensure the `assets/icons/` directory exists with SVG files
 - Check browser console for JavaScript errors
 
 ### Home location not working
 - Run `python3 plot_map.py --home-address "Your Address"` to set it
-- Check that `home_location.json` was created
+- Check that `config/home_location.json` was created
 - Verify internet connection for geocoding API
 
 ### dump1090 not found

@@ -4,9 +4,9 @@
 #
 # This script starts dump1090 and runs the appropriate Python collector.
 # Usage:
+#   ./adsb.sh        # Run CSV logger (default)
 #   ./adsb.sh csv    # Run CSV logger
-#   ./adsb.sh db     # Run database logger (when implemented)
-#   ./adsb.sh api    # Run API server (when implemented)
+#   ./adsb.sh live   # Run CSV logger + auto-update map
 #
 
 set -e
@@ -22,6 +22,10 @@ DUMP1090_CMD="${DUMP1090_CMD:-dump1090}"
 DUMP1090_HOST="${ADSB_HOST:-127.0.0.1}"
 DUMP1090_PORT="${ADSB_PORT:-30003}"
 STARTUP_DELAY=3  # seconds to wait for dump1090 to start
+
+# Get script directory (for relative paths)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OUTPUT_DIR="$SCRIPT_DIR/output"
 
 # Mode selection
 MODE="${1:-csv}"
@@ -51,7 +55,7 @@ start_dump1090() {
     "$DUMP1090_CMD" --net --interactive > /dev/null 2>&1 &
     DUMP1090_PID=$!
     echo "dump1090 started with PID: $DUMP1090_PID"
-    
+
     # Wait for dump1090 to start listening
     echo "Waiting for dump1090 to start..."
     for i in {1..10}; do
@@ -61,7 +65,7 @@ start_dump1090() {
         fi
         sleep 0.5
     done
-    
+
     echo -e "${RED}Error: dump1090 failed to start or is not listening on port $DUMP1090_PORT${NC}"
     kill $DUMP1090_PID 2>/dev/null || true
     exit 1
@@ -89,123 +93,98 @@ cleanup() {
 # Set up cleanup trap
 trap cleanup EXIT INT TERM
 
+# Ensure output directory exists
+mkdir -p "$OUTPUT_DIR"
+
 # Main execution
 case "$MODE" in
     csv)
         echo "=== ADS-B CSV Logger ==="
         check_dump1090
-        
+
         # Check if dump1090 is already running
         if ! check_port; then
             start_dump1090
             sleep "$STARTUP_DELAY"
         fi
-        
+
         # Run the CSV logger
         echo -e "${GREEN}Starting CSV logger...${NC}"
+        echo -e "Output directory: ${OUTPUT_DIR}"
+        cd "$SCRIPT_DIR"
         python3 adsb_to_csv.py
         ;;
-    
-    db)
-        echo "=== ADS-B Database Logger ==="
-        echo -e "${YELLOW}Database logger (Step 2) not yet implemented.${NC}"
-        echo "See SPEC.md for implementation details."
-        exit 1
-        ;;
-    
-    api)
-        echo "=== ADS-B HTTP API Server ==="
-        echo -e "${YELLOW}HTTP API server (Step 3) not yet implemented.${NC}"
-        echo "See SPEC.md for implementation details."
-        exit 1
-        ;;
-    
+
     live)
         echo "=== ADS-B Live Capture + Map ==="
         check_dump1090
-        
+
         # Check if dump1090 is already running
         if ! check_port; then
             start_dump1090
             sleep "$STARTUP_DELAY"
         fi
-        
+
         # Check if folium is installed
         if ! python3 -c "import folium" 2>/dev/null; then
             echo -e "${RED}Error: folium is not installed.${NC}"
             echo "Install it with: pip install folium"
             exit 1
         fi
-        
+
         # Start CSV logger in background
         echo -e "${GREEN}Starting CSV logger in background...${NC}"
+        cd "$SCRIPT_DIR"
         python3 adsb_to_csv.py &
         CSV_PID=$!
-        
+
         # Wait a moment for some data to accumulate
         sleep 3
-        
+
         # Start HTTP server in background
         HTTP_PORT="${ADSB_HTTP_PORT:-8000}"
-        
-        # Check if port is already in use and kill all existing processes
+
+        # Check if port is already in use and kill existing processes
         EXISTING_PIDS=$(lsof -ti:"$HTTP_PORT" 2>/dev/null || true)
         if [ -n "$EXISTING_PIDS" ]; then
             echo -e "${YELLOW}Port $HTTP_PORT is already in use (PIDs: $EXISTING_PIDS)${NC}"
             echo -e "${YELLOW}Killing existing process(es)...${NC}"
             echo "$EXISTING_PIDS" | xargs kill -9 2>/dev/null || true
             sleep 2
-            # Verify port is now free
-            if lsof -ti:"$HTTP_PORT" >/dev/null 2>&1; then
-                echo -e "${RED}Warning: Port $HTTP_PORT still in use after kill attempt${NC}"
-            fi
         fi
-        
+
         echo -e "${GREEN}Starting HTTP server on port $HTTP_PORT...${NC}"
         python3 serve_map.py --port "$HTTP_PORT" &
         HTTP_PID=$!
         sleep 2
-        
+
         # Verify server started
         if ! kill -0 "$HTTP_PID" 2>/dev/null; then
             echo -e "${RED}Error: HTTP server failed to start${NC}"
-            echo "Try a different port: python3 serve_map.py --port 8001"
             exit 1
         fi
-        
-        # Check if port is listening
-        if ! lsof -i :"$HTTP_PORT" >/dev/null 2>&1; then
-            echo -e "${YELLOW}Warning: Server started but port $HTTP_PORT may not be listening yet${NC}"
-            sleep 1
-        else
-            echo -e "${GREEN}HTTP server is ready on port $HTTP_PORT${NC}"
-        fi
-        
+
+        echo -e "${GREEN}HTTP server is ready on port $HTTP_PORT${NC}"
+
         # Start map watcher
         echo -e "${GREEN}Starting map watcher...${NC}"
-        echo -e "${YELLOW}Map will be saved to: adsb_map.html${NC}"
+        echo -e "${YELLOW}Map will be saved to: ${OUTPUT_DIR}/adsb_map.html${NC}"
         echo -e "${GREEN}Open http://127.0.0.1:$HTTP_PORT/adsb_map.html in your browser${NC}"
         echo -e "${YELLOW}Map updates automatically every second!${NC}"
         echo ""
-        
-        # Run map watcher (this will run in foreground)
+
+        # Run map watcher (foreground)
         python3 watch_map.py
-        
-        # If we get here, map watcher exited, cleanup
-        kill $CSV_PID 2>/dev/null || true
-        kill $HTTP_PID 2>/dev/null || true
         ;;
-    
+
     *)
-        echo "Usage: $0 {csv|db|api|live}"
+        echo "Usage: $0 {csv|live}"
         echo ""
         echo "Modes:"
-        echo "  csv  - Run CSV logger (Step 1)"
-        echo "  db   - Run database logger (Step 2 - TODO)"
-        echo "  api  - Run HTTP API server (Step 3 - TODO)"
-        echo "  live - Run CSV logger + auto-update map (one command to rule them all!)"
+        echo "  csv  - Run CSV logger (saves to output/adsb_history.csv and output/adsb_current.csv)"
+        echo "  live - Run CSV logger + auto-update map with HTTP server"
+        echo ""
+        echo "Output files are saved to: $OUTPUT_DIR"
         exit 1
         ;;
 esac
-
-

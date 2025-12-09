@@ -5,92 +5,65 @@ ADS-B to CSV Logger
 Connects to dump1090 SBS-1 stream (TCP port 30003) and logs aircraft positions
 to two CSV files:
 1. Historical: all position records (append-only)
-2. Current: latest position per aircraft seen in the last 60 seconds (snapshot, updated continuously)
+2. Current: latest position per aircraft seen in the last 60 seconds (snapshot)
 
-Designed to be portable across macOS, Linux, and Raspberry Pi.
+Usage:
+    python3 adsb_to_csv.py
 
 Environment Variables:
     ADSB_HOST: dump1090 host (default: 127.0.0.1)
     ADSB_PORT: dump1090 port (default: 30003)
-    ADSB_CSV_PATH: historical CSV file path (default: adsb_history.csv)
-    ADSB_CURRENT_CSV_PATH: current positions CSV file path (default: adsb_current.csv)
+    ADSB_CSV_PATH: historical CSV file path (default: output/adsb_history.csv)
+    ADSB_CURRENT_CSV_PATH: current positions CSV (default: output/adsb_current.csv)
     ADSB_CURRENT_MAX_AGE_SECONDS: max age in seconds for current CSV (default: 60)
 """
 
 import csv
-import os
 import socket
 import sys
 import time
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any
 
-
-# Configuration defaults
-DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 30003
-DEFAULT_CSV_PATH = "adsb_history.csv"
-DEFAULT_CURRENT_CSV_PATH = "adsb_current.csv"
-RECONNECT_DELAY = 5  # seconds
-FLUSH_INTERVAL = 10  # flush CSV every N records
-CURRENT_UPDATE_INTERVAL = 5  # update current CSV every N new positions
-CURRENT_MAX_AGE_SECONDS = 60  # only show aircraft seen in last N seconds
-
-
-def get_config() -> Dict[str, Any]:
-    """Read configuration from environment variables with defaults."""
-    return {
-        "host": os.getenv("ADSB_HOST", DEFAULT_HOST),
-        "port": int(os.getenv("ADSB_PORT", str(DEFAULT_PORT))),
-        "csv_path": os.getenv("ADSB_CSV_PATH", DEFAULT_CSV_PATH),
-        "current_csv_path": os.getenv("ADSB_CURRENT_CSV_PATH", DEFAULT_CURRENT_CSV_PATH),
-        "current_max_age_seconds": int(os.getenv("ADSB_CURRENT_MAX_AGE_SECONDS", str(CURRENT_MAX_AGE_SECONDS))),
-    }
+# Import shared configuration
+from src.lib.config import (
+    get_history_csv_path,
+    get_current_csv_path,
+    get_dump1090_host,
+    get_dump1090_port,
+    get_current_max_age,
+    CSV_COLUMNS,
+    RECONNECT_DELAY,
+    FLUSH_INTERVAL,
+    CURRENT_UPDATE_INTERVAL,
+)
 
 
-def ensure_csv_header(csv_path: str) -> None:
+def ensure_csv_header(csv_path) -> None:
     """Ensure CSV file exists with header row."""
-    if not os.path.exists(csv_path):
+    if not csv_path.exists():
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
-            writer.writerow([
-                "timestamp_utc",
-                "icao",
-                "flight",
-                "lat",
-                "lon",
-                "altitude_ft",
-                "speed_kts",
-                "heading_deg",
-                "squawk",
-            ])
+            writer.writerow(CSV_COLUMNS)
         print(f"Created CSV file: {csv_path}")
 
 
-def write_current_positions_csv(csv_path: str, current_positions: Dict[str, Dict[str, Any]], max_age_seconds: int = 60) -> None:
+def write_current_positions_csv(csv_path, current_positions: Dict[str, Dict[str, Any]],
+                                 max_age_seconds: int = 60) -> None:
     """
     Write the current positions CSV file with latest position for each aircraft.
     Only includes aircraft seen within the last max_age_seconds.
-    This overwrites the entire file with the current snapshot.
     """
     now = datetime.now(timezone.utc)
     cutoff_time = now - timedelta(seconds=max_age_seconds)
-    
+
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow([
-            "timestamp_utc",
-            "icao",
-            "flight",
-            "lat",
-            "lon",
-            "altitude_ft",
-            "speed_kts",
-            "heading_deg",
-            "squawk",
-        ])
-        
-        # Filter to only recent positions and write, sorted by ICAO for consistency
+        writer.writerow(CSV_COLUMNS)
+
+        # Filter to only recent positions
         recent_positions = []
         for icao, pos in current_positions.items():
             try:
@@ -98,10 +71,9 @@ def write_current_positions_csv(csv_path: str, current_positions: Dict[str, Dict
                 if pos_time >= cutoff_time:
                     recent_positions.append((icao, pos))
             except (ValueError, KeyError):
-                # If timestamp parsing fails, include it anyway (better safe than sorry)
                 recent_positions.append((icao, pos))
-        
-        # Write all recent positions, sorted by ICAO for consistency
+
+        # Write sorted by ICAO for consistency
         for icao, pos in sorted(recent_positions, key=lambda x: x[0]):
             writer.writerow([
                 pos["timestamp_utc"],
@@ -119,75 +91,76 @@ def write_current_positions_csv(csv_path: str, current_positions: Dict[str, Dict
 def parse_sbs_line(line: str) -> Optional[Dict[str, Any]]:
     """
     Parse a single SBS-1 format line.
-    
+
     Expected format:
-    MSG,subtype,transmission_type,session_id,icao,flight_id,date,time,date2,time2,callsign,altitude,speed,track,lat,lon,vertical_rate,squawk,alert,emergency,spi,surface
-    
+    MSG,subtype,transmission_type,session_id,icao,flight_id,date,time,date2,time2,
+    callsign,altitude,speed,track,lat,lon,vertical_rate,squawk,alert,emergency,spi,surface
+
     Returns dict with parsed fields, or None if line is invalid/not a position message.
     """
     line = line.strip()
     if not line:
         return None
-    
+
     fields = line.split(",")
-    
+
     # Must be a MSG type
     if len(fields) < 1 or fields[0] != "MSG":
         return None
-    
+
     # Need at least ICAO (field 4) and lat/lon (fields 14, 15)
     if len(fields) < 16:
         return None
-    
+
     icao = fields[4].strip()
     if not icao:
         return None
-    
+
     # Extract lat/lon - must be present and numeric
     try:
         lat_str = fields[14].strip()
         lon_str = fields[15].strip()
-        
+
         if not lat_str or not lon_str:
             return None
-        
+
         lat = float(lat_str)
         lon = float(lon_str)
-        
-        # Basic validation: lat in [-90, 90], lon in [-180, 180]
+
+        # Basic validation
         if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
             return None
     except (ValueError, IndexError):
         return None
-    
+
     # Extract optional fields
     flight = fields[10].strip() if len(fields) > 10 else ""
-    
+
     altitude_ft = None
     if len(fields) > 11 and fields[11].strip():
         try:
             altitude_ft = int(float(fields[11]))
         except ValueError:
             pass
-    
+
     speed_kts = None
     if len(fields) > 12 and fields[12].strip():
         try:
             speed_kts = float(fields[12])
         except ValueError:
             pass
-    
+
     heading_deg = None
     if len(fields) > 13 and fields[13].strip():
         try:
             heading_deg = float(fields[13])
         except ValueError:
             pass
-    
+
     squawk = None
     if len(fields) > 17 and fields[17].strip():
         squawk = fields[17].strip()
-    
+
     return {
         "icao": icao,
         "flight": flight,
@@ -200,11 +173,11 @@ def parse_sbs_line(line: str) -> Optional[Dict[str, Any]]:
     }
 
 
-def write_position(csv_path: str, position: Dict[str, Any], timestamp_utc: Optional[str] = None) -> None:
+def write_position(csv_path, position: Dict[str, Any], timestamp_utc: Optional[str] = None) -> None:
     """Write a position record to the CSV file."""
     if timestamp_utc is None:
         timestamp_utc = datetime.now(timezone.utc).isoformat()
-    
+
     with open(csv_path, "a", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow([
@@ -233,93 +206,92 @@ def connect_to_dump1090(host: str, port: int) -> socket.socket:
 
 def main():
     """Main processing loop."""
-    config = get_config()
+    # Get configuration
+    host = get_dump1090_host()
+    port = get_dump1090_port()
+    csv_path = get_history_csv_path()
+    current_csv_path = get_current_csv_path()
+    max_age = get_current_max_age()
+
     print(f"Starting ADS-B CSV logger")
-    print(f"  Host: {config['host']}:{config['port']}")
-    print(f"  Historical CSV: {config['csv_path']}")
-    print(f"  Current CSV: {config['current_csv_path']}")
-    
-    ensure_csv_header(config["csv_path"])
-    ensure_csv_header(config["current_csv_path"])
-    
-    # Track latest position for each aircraft (ICAO -> position dict)
+    print(f"  Host: {host}:{port}")
+    print(f"  Historical CSV: {csv_path}")
+    print(f"  Current CSV: {current_csv_path}")
+
+    ensure_csv_header(csv_path)
+    ensure_csv_header(current_csv_path)
+
+    # Track latest position for each aircraft
     current_positions: Dict[str, Dict[str, Any]] = {}
-    
+
     record_count = 0
     last_flush_count = 0
     last_current_update = 0
-    
+
     while True:
         try:
-            sock = connect_to_dump1090(config["host"], config["port"])
-            
-            # Wrap socket in a text file-like object for line reading
+            sock = connect_to_dump1090(host, port)
+
             with sock.makefile("r", encoding="utf-8", errors="replace") as f:
                 print("Reading SBS-1 stream... (Ctrl+C to stop)")
-                
+
                 for line in f:
                     try:
                         position = parse_sbs_line(line)
                         if position:
                             timestamp_utc = datetime.now(timezone.utc).isoformat()
-                            
-                            # Add timestamp to position
                             position_with_ts = {**position, "timestamp_utc": timestamp_utc}
-                            
-                            # Write to historical CSV (append-only)
-                            write_position(config["csv_path"], position, timestamp_utc)
-                            
-                            # Update current positions (latest per ICAO)
+
+                            # Write to historical CSV
+                            write_position(csv_path, position, timestamp_utc)
+
+                            # Update current positions
                             icao = position["icao"]
                             current_positions[icao] = position_with_ts
-                            
+
                             record_count += 1
-                            
+
                             # Update current positions CSV periodically
                             if record_count - last_current_update >= CURRENT_UPDATE_INTERVAL:
                                 write_current_positions_csv(
-                                    config["current_csv_path"], 
+                                    current_csv_path,
                                     current_positions,
-                                    config["current_max_age_seconds"]
+                                    max_age
                                 )
                                 last_current_update = record_count
-                            
+
                             # Periodic status update
                             if record_count - last_flush_count >= FLUSH_INTERVAL:
                                 if record_count % 100 == 0:
                                     aircraft_count = len(current_positions)
                                     print(f"Logged {record_count} positions ({aircraft_count} aircraft)...", end="\r")
                                 last_flush_count = record_count
-                    
+
                     except Exception as e:
-                        # Log parsing errors but continue
                         print(f"\nWarning: Error parsing line: {e}", file=sys.stderr)
                         continue
-        
+
         except KeyboardInterrupt:
-            # Final update of current positions before exit
+            # Final update before exit
             if current_positions:
-                write_current_positions_csv(
-                    config["current_csv_path"], 
-                    current_positions,
-                    config["current_max_age_seconds"]
-                )
-            # Count recent aircraft
+                write_current_positions_csv(current_csv_path, current_positions, max_age)
+
             now = datetime.now(timezone.utc)
-            cutoff_time = now - timedelta(seconds=config["current_max_age_seconds"])
+            cutoff_time = now - timedelta(seconds=max_age)
             recent_count = sum(
                 1 for pos in current_positions.values()
                 if datetime.fromisoformat(pos["timestamp_utc"].replace("Z", "+00:00")) >= cutoff_time
             )
             aircraft_count = len(current_positions)
-            print(f"\n\nStopped by user. Total positions logged: {record_count} ({aircraft_count} unique aircraft, {recent_count} in last {config['current_max_age_seconds']}s)")
+            print(f"\n\nStopped by user. Total positions logged: {record_count} "
+                  f"({aircraft_count} unique aircraft, {recent_count} in last {max_age}s)")
             sys.exit(0)
-        
+
         except (socket.error, OSError, ConnectionError) as e:
             print(f"Connection error: {e}")
             print(f"Reconnecting in {RECONNECT_DELAY} seconds... (Press Ctrl+C to exit)")
             time.sleep(RECONNECT_DELAY)
-        
+
         except Exception as e:
             print(f"\nUnexpected error: {e}", file=sys.stderr)
             print(f"Reconnecting in {RECONNECT_DELAY} seconds...")
@@ -328,4 +300,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -9,274 +9,30 @@ Usage:
     python3 plot_map.py                    # Plot current positions
     python3 plot_map.py --historical       # Plot all historical positions
     python3 plot_map.py --icao 3C5EF2     # Plot trajectory for specific aircraft
+    python3 plot_map.py --home-address "Milan, Italy"  # Set home location
 """
 
 import argparse
 import csv
 import json
-import math
 import os
 import sys
-import time
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 
+# Import shared modules
+from src.lib.config import (
+    PROJECT_ROOT, OUTPUT_DIR, ICONS_DIR,
+    get_history_csv_path, get_current_csv_path,
+    DEFAULT_MAP_HTML, DEFAULT_CURRENT_MAP_HTML,
+)
+from src.lib.geo import (
+    get_home_location, set_home_from_address, setup_home_location,
+    calculate_bearing, calculate_3d_distance,
+)
+from src.lib.colors import get_altitude_color, get_altitude_color_js
 
-def calculate_bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """
-    Calculate the bearing (heading) from point 1 to point 2.
-    Returns bearing in degrees (0-360, where 0 is North).
-    """
-    lat1_rad = math.radians(lat1)
-    lat2_rad = math.radians(lat2)
-    lon_diff = math.radians(lon2 - lon1)
-
-    x = math.sin(lon_diff) * math.cos(lat2_rad)
-    y = math.cos(lat1_rad) * math.sin(lat2_rad) - math.sin(lat1_rad) * math.cos(lat2_rad) * math.cos(lon_diff)
-
-    bearing = math.atan2(x, y)
-    bearing_deg = math.degrees(bearing)
-
-    # Normalize to 0-360
-    return (bearing_deg + 360) % 360
-
-
-# Home location configuration
-HOME_CONFIG_FILE = os.path.join(os.path.dirname(__file__), "home_location.json")
-_cached_home_location = None
-
-
-def geocode_address(address: str) -> Optional[dict]:
-    """
-    Geocode an address using Nominatim (OpenStreetMap).
-    Returns dict with lat, lon, display_name or None if failed.
-    """
-    import urllib.request
-    import urllib.parse
-
-    try:
-        # Use Nominatim geocoding API (free, no API key needed)
-        encoded_address = urllib.parse.quote(address)
-        url = f"https://nominatim.openstreetmap.org/search?q={encoded_address}&format=json&limit=1"
-
-        req = urllib.request.Request(url, headers={
-            'User-Agent': 'ADS-B Tracker/1.0 (personal use)'
-        })
-
-        with urllib.request.urlopen(req, timeout=10) as response:
-            data = json.loads(response.read().decode())
-            if data and len(data) > 0:
-                result = data[0]
-                return {
-                    'lat': float(result['lat']),
-                    'lon': float(result['lon']),
-                    'display_name': result.get('display_name', address)
-                }
-    except Exception as e:
-        print(f"Geocoding failed: {e}", file=sys.stderr)
-
-    return None
-
-
-def get_elevation(lat: float, lon: float) -> Optional[float]:
-    """
-    Get elevation for coordinates using Open-Elevation API.
-    Returns elevation in meters or None if failed.
-    """
-    import urllib.request
-
-    try:
-        # Use Open-Elevation API (free, no API key needed)
-        url = f"https://api.open-elevation.com/api/v1/lookup?locations={lat},{lon}"
-
-        req = urllib.request.Request(url, headers={
-            'User-Agent': 'ADS-B Tracker/1.0 (personal use)'
-        })
-
-        with urllib.request.urlopen(req, timeout=10) as response:
-            data = json.loads(response.read().decode())
-            if data and 'results' in data and len(data['results']) > 0:
-                return float(data['results'][0]['elevation'])
-    except Exception as e:
-        print(f"Elevation lookup failed: {e}", file=sys.stderr)
-
-    return None
-
-
-def setup_home_location() -> dict:
-    """
-    Interactive setup for home location.
-    Prompts user for address, geocodes it, and gets elevation.
-    Returns dict with lat, lon, elevation_m, address.
-    """
-    print("\n" + "=" * 60)
-    print("HOME LOCATION SETUP")
-    print("=" * 60)
-    print("\nEnter your home address or location name.")
-    print("Examples:")
-    print("  - 123 Main Street, New York, NY")
-    print("  - 10 Downing Street, London, UK")
-    print("  - Piazza del Duomo, Milan, Italy")
-    print()
-
-    address = input("Enter your location: ").strip()
-
-    if not address:
-        print("No address provided, using default location.")
-        return None
-
-    print(f"\nGeocoding '{address}'...")
-    geo_result = geocode_address(address)
-
-    if not geo_result:
-        print("Could not find that location. Please try again with a different address.")
-        return None
-
-    lat, lon = geo_result['lat'], geo_result['lon']
-    display_name = geo_result['display_name']
-
-    print(f"Found: {display_name}")
-    print(f"Coordinates: {lat:.6f}, {lon:.6f}")
-
-    print("\nLooking up elevation...")
-    elevation = get_elevation(lat, lon)
-
-    if elevation is not None:
-        elevation_ft = elevation * 3.28084
-        print(f"Elevation: {elevation:.1f} m ({elevation_ft:.0f} ft)")
-    else:
-        print("Could not determine elevation, using 0m (sea level)")
-        elevation = 0.0
-
-    # Confirm with user
-    print()
-    confirm = input("Is this correct? (y/n): ").strip().lower()
-
-    if confirm != 'y':
-        print("Setup cancelled.")
-        return None
-
-    home_config = {
-        'address': address,
-        'display_name': display_name,
-        'lat': lat,
-        'lon': lon,
-        'elevation_m': elevation,
-        'elevation_ft': elevation * 3.28084
-    }
-
-    # Save to config file
-    try:
-        with open(HOME_CONFIG_FILE, 'w') as f:
-            json.dump(home_config, f, indent=2)
-        print(f"\nHome location saved to: {HOME_CONFIG_FILE}")
-    except Exception as e:
-        print(f"Warning: Could not save config file: {e}")
-
-    return home_config
-
-
-def get_home_location() -> dict:
-    """
-    Get home location from config file, environment variables, or prompt user.
-    Returns dict with lat, lon, elevation_m, elevation_ft, address.
-    """
-    global _cached_home_location
-
-    # Return cached location if available
-    if _cached_home_location:
-        return _cached_home_location
-
-    # Check environment variables first (for backward compatibility)
-    env_lat = os.getenv("ADSB_HOME_LAT")
-    env_lon = os.getenv("ADSB_HOME_LON")
-    env_elev = os.getenv("ADSB_HOME_ELEVATION_M")
-
-    if env_lat and env_lon:
-        try:
-            lat = float(env_lat)
-            lon = float(env_lon)
-            elev = float(env_elev) if env_elev else 0.0
-            _cached_home_location = {
-                'lat': lat,
-                'lon': lon,
-                'elevation_m': elev,
-                'elevation_ft': elev * 3.28084,
-                'address': 'Environment variables',
-                'display_name': f'{lat}, {lon}'
-            }
-            return _cached_home_location
-        except ValueError:
-            pass
-
-    # Check config file
-    if os.path.exists(HOME_CONFIG_FILE):
-        try:
-            with open(HOME_CONFIG_FILE, 'r') as f:
-                config = json.load(f)
-                if 'lat' in config and 'lon' in config:
-                    _cached_home_location = config
-                    print(f"Loaded home location: {config.get('display_name', 'Unknown')}")
-                    return _cached_home_location
-        except Exception as e:
-            print(f"Warning: Could not load config file: {e}", file=sys.stderr)
-
-    # No config found - run interactive setup if running interactively
-    if sys.stdin.isatty():
-        print("\nNo home location configured.")
-        setup = input("Would you like to set up your home location now? (y/n): ").strip().lower()
-        if setup == 'y':
-            result = setup_home_location()
-            if result:
-                _cached_home_location = result
-                return _cached_home_location
-
-    # Fallback default (Central London - Big Ben)
-    print("Using default location (Central London)")
-    _cached_home_location = {
-        'lat': 51.5007,
-        'lon': -0.1246,
-        'elevation_m': 5.0,
-        'elevation_ft': 16.4,
-        'address': 'Default',
-        'display_name': 'Central London, UK'
-    }
-    return _cached_home_location
-
-
-def calculate_3d_distance(lat1: float, lon1: float, alt1_m: float,
-                          lat2: float, lon2: float, alt2_m: float) -> float:
-    """
-    Calculate 3D distance between two points accounting for altitude.
-    Returns distance in kilometers.
-
-    lat1, lon1, alt1_m: First point (e.g., home)
-    lat2, lon2, alt2_m: Second point (e.g., aircraft)
-    """
-    # Earth's radius in km
-    R = 6371.0
-
-    # Convert to radians
-    lat1_rad = math.radians(lat1)
-    lat2_rad = math.radians(lat2)
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
-
-    # Haversine formula for horizontal distance
-    a = math.sin(dlat / 2) ** 2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon / 2) ** 2
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    horizontal_distance_km = R * c
-
-    # Altitude difference in km
-    alt_diff_km = (alt2_m - alt1_m) / 1000.0
-
-    # 3D distance using Pythagorean theorem
-    distance_3d_km = math.sqrt(horizontal_distance_km ** 2 + alt_diff_km ** 2)
-
-    return distance_3d_km
-
-
-# Import aircraft database for type lookup
+# Import aircraft database
 try:
     from aircraft_db import get_aircraft_info, get_icon_for_type, AircraftDatabase
     AIRCRAFT_DB_AVAILABLE = True
@@ -285,25 +41,24 @@ except ImportError:
     print("Warning: aircraft_db module not available, using default icons", file=sys.stderr)
 
 
-def read_csv_positions(csv_path: str) -> List[Dict[str, Any]]:
+def read_csv_positions(csv_path) -> List[Dict[str, Any]]:
     """Read positions from a CSV file."""
     positions = []
-    
+
     if not os.path.exists(csv_path):
         print(f"Error: CSV file not found: {csv_path}", file=sys.stderr)
         return positions
-    
+
     with open(csv_path, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
-        for row_num, row in enumerate(reader, start=2):  # Start at 2 because row 1 is header
+        for row_num, row in enumerate(reader, start=2):
             try:
-                # Skip empty rows
                 if not row.get("icao") or not row.get("lat") or not row.get("lon"):
                     continue
-                
+
                 lat = float(row["lat"])
                 lon = float(row["lon"])
-                
+
                 position = {
                     "timestamp_utc": row.get("timestamp_utc", ""),
                     "icao": row.get("icao", "").strip(),
@@ -319,99 +74,168 @@ def read_csv_positions(csv_path: str) -> List[Dict[str, Any]]:
             except (ValueError, KeyError) as e:
                 print(f"Warning: Skipping row {row_num} in {csv_path}: {e}", file=sys.stderr)
                 continue
-    
+
     return positions
 
 
-def get_altitude_color(altitude_ft: Optional[int]) -> str:
+def calculate_headings_from_trajectory(positions: List[Dict[str, Any]], history_path=None) -> None:
     """
-    Get color based on altitude with progressive interpolation.
-    Returns folium-compatible colors: orange, lightred, green, lightblue, blue, purple
+    Calculate headings from trajectory for positions without heading data.
+    Modifies positions in place.
     """
-    if altitude_ft is None:
-        return "gray"
-    
-    # Color stops: (altitude_ft, folium_color)
-    # Mapped to valid folium colors: orange -> lightred -> green -> lightblue -> blue -> purple
-    color_stops = [
-        (0, "orange"),        # 0ft - orange
-        (4000, "lightred"),   # 4000ft - yellow-ish (using lightred as closest)
-        (8000, "green"),      # 8000ft - green
-        (20000, "lightblue"), # 20000ft - cyan-ish (using lightblue)
-        (30000, "blue"),      # 30000ft - blue
-        (40000, "purple"),    # 40000ft - magenta-ish (using purple)
-    ]
-    
-    # Find the two stops to interpolate between
-    if altitude_ft <= color_stops[0][0]:
-        return color_stops[0][1]
-    if altitude_ft >= color_stops[-1][0]:
-        return color_stops[-1][1]
-    
-    # Find the segment
-    for i in range(len(color_stops) - 1):
-        if color_stops[i][0] <= altitude_ft <= color_stops[i + 1][0]:
-            # Interpolate between these two colors
-            alt1, color1 = color_stops[i]
-            alt2, color2 = color_stops[i + 1]
-            
-            # Simple interpolation - use the lower color if close, higher if far
-            ratio = (altitude_ft - alt1) / (alt2 - alt1)
-            if ratio < 0.5:
-                return color1
-            else:
-                return color2
-    
-    return "gray"
+    # Group positions by ICAO
+    icao_positions = {}
+    for p in positions:
+        icao = p["icao"]
+        if icao not in icao_positions:
+            icao_positions[icao] = []
+        icao_positions[icao].append(p)
+
+    # For aircraft with only one position, try to load recent historical positions
+    if history_path and os.path.exists(history_path):
+        icaos_needing_history = {
+            icao for icao, pos_list in icao_positions.items()
+            if len(pos_list) == 1 and pos_list[0].get("heading_deg") is None
+        }
+
+        if icaos_needing_history:
+            try:
+                with open(history_path, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+
+                history_positions = {icao: [] for icao in icaos_needing_history}
+                reader = csv.DictReader(lines)
+                all_rows = list(reader)
+
+                for row in reversed(all_rows):
+                    icao = row.get("icao", "").strip()
+                    if icao in icaos_needing_history and len(history_positions[icao]) < 5:
+                        try:
+                            lat = float(row["lat"])
+                            lon = float(row["lon"])
+                            history_positions[icao].append({
+                                "lat": lat,
+                                "lon": lon,
+                                "timestamp_utc": row.get("timestamp_utc", "")
+                            })
+                        except (ValueError, KeyError):
+                            pass
+
+                    if all(len(v) >= 2 for v in history_positions.values()):
+                        break
+
+                # Add historical positions for heading calculation
+                for icao, hist_list in history_positions.items():
+                    if hist_list:
+                        hist_list.reverse()
+                        icao_positions[icao] = hist_list + icao_positions[icao]
+            except Exception as e:
+                print(f"Warning: Could not load history for heading calculation: {e}", file=sys.stderr)
+
+    # Calculate heading from consecutive positions
+    for icao, pos_list in icao_positions.items():
+        pos_list.sort(key=lambda x: x.get("timestamp_utc", ""))
+
+        for i in range(len(pos_list)):
+            if pos_list[i].get("heading_deg") is None:
+                if i > 0:
+                    prev_pos = pos_list[i - 1]
+                    if prev_pos["lat"] != pos_list[i]["lat"] or prev_pos["lon"] != pos_list[i]["lon"]:
+                        heading = calculate_bearing(
+                            prev_pos["lat"], prev_pos["lon"],
+                            pos_list[i]["lat"], pos_list[i]["lon"]
+                        )
+                        pos_list[i]["heading_deg"] = round(heading, 1)
+                elif i < len(pos_list) - 1:
+                    next_pos = pos_list[i + 1]
+                    if next_pos["lat"] != pos_list[i]["lat"] or next_pos["lon"] != pos_list[i]["lon"]:
+                        heading = calculate_bearing(
+                            pos_list[i]["lat"], pos_list[i]["lon"],
+                            next_pos["lat"], next_pos["lon"]
+                        )
+                        pos_list[i]["heading_deg"] = round(heading, 1)
 
 
-def create_map(positions: List[Dict[str, Any]], output_path: str = "adsb_map.html", 
-                title: str = "ADS-B Aircraft Positions", refresh_interval: int = 1,
-                current_icaos: Optional[set] = None) -> None:
+def load_svg_icons() -> Dict[str, str]:
+    """Load SVG icons from assets/icons/ directory."""
+    svg_icons = {}
+    for icon_name in ["plane", "helicopter", "light", "glider"]:
+        svg_path = ICONS_DIR / f"{icon_name}.svg"
+        if svg_path.exists():
+            with open(svg_path, "r") as f:
+                svg_content = f.read().strip()
+                if 'width=' not in svg_content:
+                    svg_content = svg_content.replace('<svg ', '<svg width="28" height="28" ')
+                svg_icons[icon_name] = svg_content
+    return svg_icons
+
+
+def create_map(positions: List[Dict[str, Any]], output_path: str = None,
+               title: str = "ADS-B Aircraft Positions", refresh_interval: int = 1,
+               current_icaos: Optional[set] = None) -> None:
     """Create an interactive map with aircraft positions using folium."""
     try:
         import folium
-        from folium import plugins
+        from folium import DivIcon
     except ImportError:
         print("Error: folium is not installed.", file=sys.stderr)
         print("Install it with: pip install folium", file=sys.stderr)
         sys.exit(1)
-    
+
+    if output_path is None:
+        output_path = str(DEFAULT_MAP_HTML)
+
     if not positions:
         print("No positions to plot.", file=sys.stderr)
         return
 
-    # Center map on home position, zoomed out to see all aircraft
+    # Get home location
     home = get_home_location()
     home_lat = home['lat']
     home_lon = home['lon']
     home_elevation_m = home.get('elevation_m', 0)
     home_elevation_ft = home.get('elevation_ft', 0)
     home_display_name = home.get('display_name', 'Home')
-    center_lat = home_lat
-    center_lon = home_lon
     print(f"Home location: {home_display_name}")
-    print(f"Coordinates: {center_lat}, {center_lon} | Elevation: {home_elevation_m:.0f}m ({home_elevation_ft:.0f}ft)")
+    print(f"Coordinates: {home_lat}, {home_lon} | Elevation: {home_elevation_m:.0f}m ({home_elevation_ft:.0f}ft)")
+
+    # Calculate bounds to fit all current aircraft
+    latest_positions = {}
+    for p in positions:
+        if current_icaos is None or p["icao"] in current_icaos:
+            icao = p["icao"]
+            if icao not in latest_positions or p.get("timestamp_utc", "") > latest_positions[icao].get("timestamp_utc", ""):
+                latest_positions[icao] = p
+
+    current_positions_list = list(latest_positions.values())
+    all_lats = [home_lat] + [p["lat"] for p in current_positions_list]
+    all_lons = [home_lon] + [p["lon"] for p in current_positions_list]
+
+    bounds = None
+    if len(current_positions_list) > 0:
+        min_lat, max_lat = min(all_lats), max(all_lats)
+        min_lon, max_lon = min(all_lons), max(all_lons)
+        lat_padding = (max_lat - min_lat) * 0.05 or 0.01
+        lon_padding = (max_lon - min_lon) * 0.05 or 0.01
+        bounds = [
+            [min_lat - lat_padding, min_lon - lon_padding],
+            [max_lat + lat_padding, max_lon + lon_padding]
+        ]
+        print(f"Fitting map to {len(current_positions_list)} current aircraft")
+    else:
+        print("No current aircraft, centering on home")
 
     # Create map
-    m = folium.Map(
-        location=[center_lat, center_lon],
-        zoom_start=9,  # Zoomed out to see all detected aircraft
-        tiles="OpenStreetMap"
-    )
-    
-    # Add different tile layers
+    m = folium.Map(location=[home_lat, home_lon], zoom_start=10, tiles="OpenStreetMap")
+
+    if bounds:
+        m.fit_bounds(bounds)
+
+    # Add tile layers
     folium.TileLayer("CartoDB positron").add_to(m)
     folium.TileLayer("CartoDB dark_matter").add_to(m)
-    
-    # Add home position marker using configured location
-    home_lat_str = str(home_lat)
-    home_lon_str = str(home_lon)
-    home_elevation_m_str = str(home_elevation_m)
-    home_elevation_ft_str = str(home_elevation_ft)
 
-    # Use DivIcon for custom "H" icon
-    from folium import DivIcon
+    # Add home marker
     home_icon_html = '''
     <div style="
         background-color: red;
@@ -441,97 +265,52 @@ def create_map(positions: List[Dict[str, Any]], output_path: str = "adsb_map.htm
         tooltip="Home",
         icon=home_icon,
     ).add_to(m)
-    
-    # Determine which aircraft are currently visible (have recent positions)
-    # If current_icaos is provided, use it; otherwise determine from timestamps
+
+    # Determine current ICAOs if not provided
     if current_icaos is None:
         current_icaos = set()
-        from datetime import datetime, timezone
         try:
             current_time = datetime.now(timezone.utc)
             for pos in positions:
                 if pos.get("timestamp_utc"):
                     try:
                         pos_time = datetime.fromisoformat(pos["timestamp_utc"].replace('Z', '+00:00'))
-                        # If position is within last 2 minutes, consider it current
                         if (current_time - pos_time).total_seconds() < 120:
                             current_icaos.add(pos["icao"])
                     except:
                         pass
         except:
-            # Fallback: if we can't determine, show markers for all
             current_icaos = set(p["icao"] for p in positions)
-    
-    # Group positions by ICAO for trajectories
-    
-    if len(positions) > 0:
-        # Group all positions by ICAO
-        icao_groups = {}
-        for pos in positions:
-            icao = pos["icao"]
-            if icao not in icao_groups:
-                icao_groups[icao] = []
-            icao_groups[icao].append(pos)
-        
-        for idx, (icao, pos_list) in enumerate(icao_groups.items()):
-            # Sort by timestamp if available
-            try:
-                pos_list_sorted = sorted(
-                    pos_list,
-                    key=lambda p: p.get("timestamp_utc", ""),
-                    reverse=True
-                )
-            except:
-                pos_list_sorted = pos_list
-            
-            # Latest position
-            latest = pos_list_sorted[0]
-            
-            # Get color based on latest altitude
-            marker_color = get_altitude_color(latest.get("altitude_ft"))
-            
-            # Only show marker for currently visible aircraft
-            # But always draw trajectory lines for all aircraft with multiple positions
-            is_current = icao in current_icaos if current_icaos else True
-            
-            # NOTE: Markers for current aircraft are created dynamically by JavaScript
-            # to avoid duplicates and allow real-time updates. Only trajectory lines
-            # are created here in Python.
-            
-            # Always draw trajectory if we have multiple positions (for both current and historical aircraft)
-            # Sort by timestamp for proper trajectory order
-            try:
-                pos_list_sorted_by_time = sorted(
-                    pos_list,
-                    key=lambda p: p.get("timestamp_utc", ""),
-                    reverse=False  # Oldest first for trajectory
-                )
-            except:
-                pos_list_sorted_by_time = pos_list
-            
-            # Draw trajectory line connecting all historical positions
-            if len(pos_list_sorted_by_time) > 1:
-                trajectory_coords = [[p["lat"], p["lon"]] for p in pos_list_sorted_by_time]
-                # Use altitude-based color for all lines, but different opacity
-                # Current aircraft: full opacity (0.6), historical: semi-transparent (0.3)
-                line_opacity = 0.6 if is_current else 0.3
-                folium.PolyLine(
-                    trajectory_coords,
-                    color=marker_color,  # Always use altitude-based color
-                    weight=2,
-                    opacity=line_opacity,
-                    popup=f"Trajectory: {icao} ({len(pos_list_sorted_by_time)} points)",
-                    tooltip=f"{icao} path",
-                ).add_to(m)
-    else:
-        # Single position or single aircraft
-        # NOTE: Markers are created dynamically by JavaScript to avoid duplicates
-        # Only trajectory lines are created here in Python (if multiple positions exist)
-        pass
-    
+
+    # Draw trajectory lines for all aircraft
+    icao_groups = {}
+    for pos in positions:
+        icao = pos["icao"]
+        if icao not in icao_groups:
+            icao_groups[icao] = []
+        icao_groups[icao].append(pos)
+
+    for icao, pos_list in icao_groups.items():
+        pos_list_sorted = sorted(pos_list, key=lambda p: p.get("timestamp_utc", ""))
+        latest = pos_list_sorted[-1] if pos_list_sorted else pos_list[0]
+        marker_color = get_altitude_color(latest.get("altitude_ft"))
+        is_current = icao in current_icaos if current_icaos else True
+
+        if len(pos_list_sorted) > 1:
+            trajectory_coords = [[p["lat"], p["lon"]] for p in pos_list_sorted]
+            line_opacity = 0.6 if is_current else 0.3
+            folium.PolyLine(
+                trajectory_coords,
+                color=marker_color,
+                weight=2,
+                opacity=line_opacity,
+                popup=f"Trajectory: {icao} ({len(pos_list_sorted)} points)",
+                tooltip=f"{icao} path",
+            ).add_to(m)
+
     # Add layer control
     folium.LayerControl().add_to(m)
-    
+
     # Load aircraft database for type lookup
     aircraft_types = {}
     if AIRCRAFT_DB_AVAILABLE:
@@ -549,85 +328,11 @@ def create_map(positions: List[Dict[str, Any]], output_path: str = "adsb_map.htm
                         "icon": get_icon_for_type(info.get("type", ""))
                     }
 
-    # Calculate headings from trajectory for positions that don't have heading data
-    # Group positions by ICAO and sort by timestamp to calculate bearing between consecutive points
-    icao_positions = {}
-    for p in positions:
-        icao = p["icao"]
-        if icao not in icao_positions:
-            icao_positions[icao] = []
-        icao_positions[icao].append(p)
+    # Calculate headings from trajectory
+    history_path = get_history_csv_path()
+    calculate_headings_from_trajectory(positions, str(history_path))
 
-    # For aircraft with only one position, try to load recent historical positions for heading calculation
-    history_path = os.getenv("ADSB_CSV_PATH", "adsb_history.csv")
-    if os.path.exists(history_path):
-        # Load last few positions from history for each ICAO that needs heading calculation
-        icaos_needing_history = {icao for icao, pos_list in icao_positions.items()
-                                  if len(pos_list) == 1 and pos_list[0].get("heading_deg") is None}
-        if icaos_needing_history:
-            # Read history file in reverse to get recent positions
-            try:
-                with open(history_path, "r", encoding="utf-8") as f:
-                    lines = f.readlines()
-                # Parse from end, collect up to 5 recent positions per ICAO
-                history_positions = {icao: [] for icao in icaos_needing_history}
-                reader = csv.DictReader(lines)
-                all_rows = list(reader)
-                for row in reversed(all_rows):
-                    icao = row.get("icao", "").strip()
-                    if icao in icaos_needing_history and len(history_positions[icao]) < 5:
-                        try:
-                            lat = float(row["lat"])
-                            lon = float(row["lon"])
-                            history_positions[icao].append({
-                                "lat": lat,
-                                "lon": lon,
-                                "timestamp_utc": row.get("timestamp_utc", "")
-                            })
-                        except (ValueError, KeyError):
-                            pass
-                    # Stop if we have enough for all ICAOs
-                    if all(len(v) >= 2 for v in history_positions.values()):
-                        break
-                # Add historical positions to icao_positions for heading calculation
-                for icao, hist_list in history_positions.items():
-                    if hist_list:
-                        # Reverse to get chronological order
-                        hist_list.reverse()
-                        # Prepend historical positions (they're older than current)
-                        icao_positions[icao] = hist_list + icao_positions[icao]
-            except Exception as e:
-                print(f"Warning: Could not load history for heading calculation: {e}", file=sys.stderr)
-
-    # Sort each ICAO's positions by timestamp and calculate headings
-    for icao, pos_list in icao_positions.items():
-        # Sort by timestamp
-        pos_list.sort(key=lambda x: x.get("timestamp_utc", ""))
-
-        # Calculate heading from consecutive positions
-        for i in range(len(pos_list)):
-            if pos_list[i].get("heading_deg") is None:
-                # Try to calculate from previous position (where we came from)
-                if i > 0:
-                    prev_pos = pos_list[i - 1]
-                    # Only calculate if positions are different
-                    if prev_pos["lat"] != pos_list[i]["lat"] or prev_pos["lon"] != pos_list[i]["lon"]:
-                        heading = calculate_bearing(
-                            prev_pos["lat"], prev_pos["lon"],
-                            pos_list[i]["lat"], pos_list[i]["lon"]
-                        )
-                        pos_list[i]["heading_deg"] = round(heading, 1)
-                # Try to calculate from next position if no previous
-                elif i < len(pos_list) - 1:
-                    next_pos = pos_list[i + 1]
-                    if next_pos["lat"] != pos_list[i]["lat"] or next_pos["lon"] != pos_list[i]["lon"]:
-                        heading = calculate_bearing(
-                            pos_list[i]["lat"], pos_list[i]["lon"],
-                            next_pos["lat"], next_pos["lon"]
-                        )
-                        pos_list[i]["heading_deg"] = round(heading, 1)
-
-    # Prepare positions data for JavaScript (will be embedded in HTML)
+    # Prepare data for JavaScript
     positions_data = [
         {
             "icao": p["icao"],
@@ -643,36 +348,17 @@ def create_map(positions: List[Dict[str, Any]], output_path: str = "adsb_map.htm
         for p in positions
     ]
     positions_json = json.dumps(positions_data)
-
-    # Aircraft types JSON for icon lookup
     aircraft_types_json = json.dumps(aircraft_types)
+    svg_icons_json = json.dumps(load_svg_icons())
+    current_icaos_json = json.dumps(list(current_icaos) if current_icaos else [])
 
-    # Load SVG icons from files
-    icons_dir = os.path.join(os.path.dirname(__file__), "icons")
-    svg_icons = {}
-    for icon_name in ["plane", "helicopter", "light", "glider"]:
-        svg_path = os.path.join(icons_dir, f"{icon_name}.svg")
-        if os.path.exists(svg_path):
-            with open(svg_path, "r") as f:
-                # Read SVG and add size attributes, escape for JSON
-                svg_content = f.read().strip()
-                # Add width/height to the svg tag if not present
-                if 'width=' not in svg_content:
-                    svg_content = svg_content.replace('<svg ', '<svg width="28" height="28" ')
-                svg_icons[icon_name] = svg_content
-    svg_icons_json = json.dumps(svg_icons)
-    
-    # Prepare current ICAOs list for JavaScript (aircraft that should show markers)
-    current_icaos_list = list(current_icaos) if current_icaos else []
-    current_icaos_json = json.dumps(current_icaos_list)
-    
-    # Also save to JSON file for HTTP fetching
+    # Save JSON data file
     json_path = os.path.splitext(output_path)[0] + "_data.json"
-    json_filename = os.path.basename(json_path)  # Just the filename for JavaScript fetch
+    json_filename = os.path.basename(json_path)
     with open(json_path, "w", encoding="utf-8") as f:
         f.write(positions_json)
-    
-    # Add CSS for aircraft icons
+
+    # Add CSS
     icon_css = '''
     <style>
     .aircraft-icon {
@@ -699,27 +385,18 @@ def create_map(positions: List[Dict[str, Any]], output_path: str = "adsb_map.htm
     </h3>
     '''
     m.get_root().html.add_child(folium.Element(title_html))
-    
-    # Add JavaScript for dynamic marker updates
-    # Embed positions data directly in HTML to avoid CORS issues with file:// protocol
-    # Escape home display name for JavaScript string
+
+    # Add JavaScript for dynamic updates
     home_display_name_escaped = home_display_name.replace("'", "\\'")
+    altitude_color_js = get_altitude_color_js()
 
     update_js = f'''
     <script>
-    // Embedded positions data (updated when HTML is regenerated or via HTTP fetch)
     let embeddedPositionsData = {positions_json};
-
-    // Current ICAOs (aircraft that should show markers, not just lines)
     let currentICAOs = new Set({current_icaos_json});
-
-    // Aircraft type information from database (for icon selection)
     let aircraftTypes = {aircraft_types_json};
-
-    // SVG icons loaded from files (pointing UP by default, rotated by heading)
     const SVG_ICONS = {svg_icons_json};
 
-    // Home location for distance calculations
     const HOME_LOCATION = {{
         lat: {home_lat},
         lon: {home_lon},
@@ -728,536 +405,216 @@ def create_map(positions: List[Dict[str, Any]], output_path: str = "adsb_map.htm
         name: '{home_display_name_escaped}'
     }};
 
-    // Calculate 3D distance from home to aircraft (in km)
     function calculate3DDistance(aircraft_lat, aircraft_lon, aircraft_alt_ft) {{
-        const R = 6371.0;  // Earth's radius in km
-
-        // Convert to radians
+        const R = 6371.0;
         const lat1 = HOME_LOCATION.lat * Math.PI / 180;
         const lat2 = aircraft_lat * Math.PI / 180;
         const dlat = (aircraft_lat - HOME_LOCATION.lat) * Math.PI / 180;
         const dlon = (aircraft_lon - HOME_LOCATION.lon) * Math.PI / 180;
 
-        // Haversine formula for horizontal distance
         const a = Math.sin(dlat / 2) * Math.sin(dlat / 2) +
                   Math.cos(lat1) * Math.cos(lat2) * Math.sin(dlon / 2) * Math.sin(dlon / 2);
         const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
         const horizontalDistKm = R * c;
 
-        // Altitude difference in km (convert aircraft altitude from ft to m, then to km)
         const aircraftAltM = (aircraft_alt_ft || 0) * 0.3048;
         const altDiffKm = (aircraftAltM - HOME_LOCATION.elevation_m) / 1000.0;
 
-        // 3D distance using Pythagorean theorem
-        const distance3D = Math.sqrt(horizontalDistKm * horizontalDistKm + altDiffKm * altDiffKm);
-
-        return distance3D;
+        return Math.sqrt(horizontalDistKm * horizontalDistKm + altDiffKm * altDiffKm);
     }}
 
-    // Format distance for display
     function formatDistance(distanceKm) {{
-        if (distanceKm < 1) {{
-            return `${{Math.round(distanceKm * 1000)}} m`;
-        }} else if (distanceKm < 10) {{
-            return `${{distanceKm.toFixed(2)}} km`;
-        }} else {{
-            return `${{distanceKm.toFixed(1)}} km`;
-        }}
+        if (distanceKm < 1) return `${{Math.round(distanceKm * 1000)}} m`;
+        if (distanceKm < 10) return `${{distanceKm.toFixed(2)}} km`;
+        return `${{distanceKm.toFixed(1)}} km`;
     }}
+
+    {altitude_color_js}
 
     let markerLayer = null;
     let lineLayer = null;
     let currentMarkers = {{}};
     let currentLines = {{}};
-    let homeMarker = null;  // Global reference to home marker - NEVER remove this
-    
-    // Initialize layers after map loads - run immediately to prevent static markers from showing
+    let homeMarker = null;
+
     (function initializeMap() {{
         function findMap() {{
-            // Find the map object - folium creates a variable with the map div ID
             let mapObj = null;
-            
-            // Method 1: Find the folium map div and get its variable
             const mapDiv = document.querySelector('.folium-map, [id^="map_"]');
-            if (mapDiv && mapDiv.id) {{
-                // Folium creates a variable with the same name as the div ID
-                const mapVarName = mapDiv.id;
-                if (typeof window[mapVarName] !== 'undefined' && window[mapVarName] instanceof L.Map) {{
-                    mapObj = window[mapVarName];
-                }}
+            if (mapDiv && mapDiv.id && typeof window[mapDiv.id] !== 'undefined') {{
+                mapObj = window[mapDiv.id];
             }}
-            
-            // Method 2: Check window.map (fallback)
-            if (!mapObj && typeof window.map !== 'undefined' && window.map instanceof L.Map) {{
-                mapObj = window.map;
-            }}
-            
-            // Method 3: Try to find via Leaflet instances (if available)
-            if (!mapObj && typeof L !== 'undefined' && L.Map && L.Map._instances) {{
-                const instanceIds = Object.keys(L.Map._instances);
-                if (instanceIds.length > 0) {{
-                    mapObj = L.Map._instances[instanceIds[0]];
-                }}
-            }}
-            
-            // Method 4: Find map div and get from _leaflet_id (if available)
-            if (!mapObj && mapDiv) {{
-                const leafletId = mapDiv._leaflet_id;
-                if (leafletId && L.Map && L.Map._instances && L.Map._instances[leafletId]) {{
-                    mapObj = L.Map._instances[leafletId];
-                }}
-            }}
-            
+            if (!mapObj && typeof window.map !== 'undefined') mapObj = window.map;
+
             if (mapObj && mapObj instanceof L.Map) {{
-                // AGGRESSIVELY remove ALL existing aircraft markers (but preserve home marker)
-                // This ensures we start with a clean slate - only JavaScript will create aircraft markers
                 const layersToRemove = [];
                 mapObj.eachLayer(function(layer) {{
-                    // Remove ALL markers EXCEPT home marker
                     if (layer instanceof L.Marker) {{
-                        // Check if this is the home marker by checking icon className
-                        const isHomeMarker = layer.options && 
-                                           layer.options.icon && 
-                                           (layer.options.icon.options || layer.options.icon) &&
-                                           (layer.options.icon.options ? layer.options.icon.options.className : layer.options.icon.className) === 'home-marker';
-                        if (!isHomeMarker) {{
-                            layersToRemove.push(layer);
-                        }}
+                        const isHome = layer.options && layer.options.icon &&
+                                      (layer.options.icon.options || layer.options.icon) &&
+                                      ((layer.options.icon.options || layer.options.icon).className === 'home-marker');
+                        if (!isHome) layersToRemove.push(layer);
                     }}
                 }});
-                // Also check for markers in any feature groups before removing (preserve home marker)
-                mapObj.eachLayer(function(layer) {{
-                    if (layer instanceof L.FeatureGroup || layer instanceof L.LayerGroup) {{
-                        layer.eachLayer(function(sublayer) {{
-                            if (sublayer instanceof L.Marker) {{
-                                const isHomeMarker = sublayer.options && 
-                                                   sublayer.options.icon && 
-                                                   (sublayer.options.icon.options || sublayer.options.icon) &&
-                                                   (sublayer.options.icon.options ? sublayer.options.icon.options.className : sublayer.options.icon.className) === 'home-marker';
-                                if (!isHomeMarker) {{
-                                    layersToRemove.push(sublayer);
-                                }}
-                            }}
-                        }});
-                    }}
-                }});
-                
-                // Remove all collected markers (home marker is excluded)
-                // CRITICAL: Never remove homeMarker - it's stored globally and must always be visible
-                layersToRemove.forEach(function(layer) {{
-                    try {{
-                        // Double-check: never remove the home marker
-                        if (layer === homeMarker) {{
-                            console.log('WARNING: Attempted to remove home marker - skipping!');
-                            return;
-                        }}
-                        if (layer._map) {{
-                            layer._map.removeLayer(layer);
-                        }} else {{
-                            mapObj.removeLayer(layer);
-                        }}
-                    }} catch(e) {{
-                        // Ignore errors if layer already removed
-                    }}
-                }});
-                
-                // Create feature groups for markers and lines
+                layersToRemove.forEach(l => {{ try {{ mapObj.removeLayer(l); }} catch(e) {{}} }});
+
                 markerLayer = L.featureGroup();
                 lineLayer = L.featureGroup();
                 mapObj.addLayer(markerLayer);
                 mapObj.addLayer(lineLayer);
-                
-                // ALWAYS add home position marker - this is CRITICAL and must NEVER be removed
-                const homeLat = '{home_lat_str}';
-                const homeLon = '{home_lon_str}';
-                console.log('Home position:', homeLat, homeLon);
-                if (homeLat && homeLon && homeLat !== '' && homeLon !== '') {{
-                    try {{
-                        const lat = parseFloat(homeLat);
-                        const lon = parseFloat(homeLon);
-                        console.log('Parsed home coordinates:', lat, lon);
-                        if (!isNaN(lat) && !isNaN(lon)) {{
-                            // Remove existing home marker if it exists
-                            if (homeMarker && mapObj.hasLayer(homeMarker)) {{
-                                mapObj.removeLayer(homeMarker);
-                            }}
-                            
-                            const homeIcon = L.divIcon({{
-                                className: 'home-marker',
-                                html: '<div style="background-color: red; border: 2px solid white; border-radius: 50%; width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 18px; color: white; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">H</div>',
-                                iconSize: [30, 30],
-                                iconAnchor: [15, 15]
-                            }});
-                            homeMarker = L.marker([lat, lon], {{
-                                icon: homeIcon
-                            }}).bindPopup('<b>Home Position</b>');
-                            mapObj.addLayer(homeMarker);
-                            console.log('HOME MARKER ADDED at:', lat, lon);
-                        }} else {{
-                            console.log('Invalid home coordinates:', lat, lon);
-                        }}
-                    }} catch(e) {{
-                        console.log('Could not add home marker:', e);
-                    }}
-                }} else {{
-                    console.log('Home coordinates not provided');
+
+                const homeLat = {home_lat};
+                const homeLon = {home_lon};
+                if (homeLat && homeLon) {{
+                    const homeIcon = L.divIcon({{
+                        className: 'home-marker',
+                        html: '<div style="background-color: red; border: 2px solid white; border-radius: 50%; width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 18px; color: white; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">H</div>',
+                        iconSize: [30, 30],
+                        iconAnchor: [15, 15]
+                    }});
+                    homeMarker = L.marker([homeLat, homeLon], {{ icon: homeIcon }}).bindPopup('<b>Home Position</b>');
+                    mapObj.addLayer(homeMarker);
                 }}
-                
-                // Initial render
+
                 updateMarkers(embeddedPositionsData);
-                
-                // Start checking for updates
                 startAutoUpdate();
             }} else {{
-                console.log('Map not found, retrying...');
                 setTimeout(findMap, 100);
             }}
         }}
-        
-        // Wait for window.onload to ensure Folium's map script has executed
-        // This is more reliable than DOMContentLoaded since Folium adds its map script at end of body
-        if (document.readyState === 'complete') {{
-            // Page already loaded, find map immediately
-            findMap();
-        }} else {{
-            // Wait for full page load including all scripts
-            window.addEventListener('load', findMap);
-        }}
+        if (document.readyState === 'complete') findMap();
+        else window.addEventListener('load', findMap);
     }})();
-    
+
     function formatTimeAgo(timestamp_utc) {{
-        // Convert ISO timestamp to "now" or "X seconds/minutes ago" format
         if (!timestamp_utc) return '';
         try {{
             const posTime = new Date(timestamp_utc);
             const now = new Date();
-            const diffMs = now - posTime;
-            const diffSec = Math.floor(diffMs / 1000);
-
+            const diffSec = Math.floor((now - posTime) / 1000);
             if (diffSec < 5) return 'now';
             if (diffSec < 60) return `${{diffSec}} seconds ago`;
-
             const diffMin = Math.floor(diffSec / 60);
             if (diffMin === 1) return '1 minute ago';
             if (diffMin < 60) return `${{diffMin}} minutes ago`;
-
             const diffHr = Math.floor(diffMin / 60);
-            if (diffHr === 1) return '1 hour ago';
-            return `${{diffHr}} hours ago`;
-        }} catch(e) {{
-            return timestamp_utc;
-        }}
-    }}
-
-    function getAltitudeColor(altitude_ft) {{
-        // Returns HEX color for SVG fill based on altitude using smooth gradient interpolation
-        if (altitude_ft === null || altitude_ft === undefined) return '#808080';  // gray
-
-        const colorStops = [
-            [0, '#FF8C00'],      // 0ft - orange
-            [4000, '#FFD700'],   // 4000ft - gold/yellow
-            [8000, '#32CD32'],   // 8000ft - lime green
-            [20000, '#00CED1'], // 20000ft - dark turquoise
-            [30000, '#1E90FF'],  // 30000ft - dodger blue
-            [40000, '#9932CC']   // 40000ft - dark orchid/purple
-        ];
-
-        // Helper to parse hex color to RGB
-        function hexToRgb(hex) {{
-            const result = /^#?([a-f\\d]{{2}})([a-f\\d]{{2}})([a-f\\d]{{2}})$/i.exec(hex);
-            return result ? {{
-                r: parseInt(result[1], 16),
-                g: parseInt(result[2], 16),
-                b: parseInt(result[3], 16)
-            }} : null;
-        }}
-
-        // Helper to convert RGB to hex
-        function rgbToHex(r, g, b) {{
-            return '#' + [r, g, b].map(x => {{
-                const hex = Math.round(x).toString(16);
-                return hex.length === 1 ? '0' + hex : hex;
-            }}).join('');
-        }}
-
-        // Helper to interpolate between two colors
-        function interpolateColor(color1, color2, ratio) {{
-            const rgb1 = hexToRgb(color1);
-            const rgb2 = hexToRgb(color2);
-            if (!rgb1 || !rgb2) return color1;
-
-            const r = rgb1.r + (rgb2.r - rgb1.r) * ratio;
-            const g = rgb1.g + (rgb2.g - rgb1.g) * ratio;
-            const b = rgb1.b + (rgb2.b - rgb1.b) * ratio;
-            return rgbToHex(r, g, b);
-        }}
-
-        if (altitude_ft <= colorStops[0][0]) return colorStops[0][1];
-        if (altitude_ft >= colorStops[colorStops.length - 1][0]) return colorStops[colorStops.length - 1][1];
-
-        for (let i = 0; i < colorStops.length - 1; i++) {{
-            if (altitude_ft >= colorStops[i][0] && altitude_ft <= colorStops[i + 1][0]) {{
-                const ratio = (altitude_ft - colorStops[i][0]) / (colorStops[i + 1][0] - colorStops[i][0]);
-                return interpolateColor(colorStops[i][1], colorStops[i + 1][1], ratio);
-            }}
-        }}
-        return '#808080';
+            return diffHr === 1 ? '1 hour ago' : `${{diffHr}} hours ago`;
+        }} catch(e) {{ return timestamp_utc; }}
     }}
 
     function getAircraftIconType(icao) {{
-        // Get icon type from aircraft database, default to 'plane'
-        if (aircraftTypes[icao] && aircraftTypes[icao].icon) {{
-            return aircraftTypes[icao].icon;
-        }}
-        return 'plane';
+        return (aircraftTypes[icao] && aircraftTypes[icao].icon) || 'plane';
     }}
 
     function getAircraftInfo(icao) {{
-        // Get full aircraft info for popup
         return aircraftTypes[icao] || null;
     }}
 
     function createSvgIcon(icao, altitude_ft, heading_deg) {{
-        // Create a rotatable SVG icon for the aircraft
         const iconType = getAircraftIconType(icao);
         const color = getAltitudeColor(altitude_ft);
         const rotation = heading_deg !== null && heading_deg !== undefined ? heading_deg : 0;
-
-        // Get the SVG template and replace color placeholder
-        let svgTemplate = SVG_ICONS[iconType] || SVG_ICONS['plane'];
-        let svg = svgTemplate.replace(/\{{COLOR\}}/g, color);
-
-        // Create a div with the rotated SVG
-        const html = `<div style="transform: rotate(${{rotation}}deg); transform-origin: center center;">
-            ${{svg}}
-        </div>`;
-
-        return L.divIcon({{
-            html: html,
-            className: 'aircraft-icon',
-            iconSize: [28, 28],
-            iconAnchor: [14, 14],  // Center of the icon
-            popupAnchor: [0, -14]
-        }});
+        let svg = (SVG_ICONS[iconType] || SVG_ICONS['plane']).replace(/\\{{COLOR\\}}/g, color);
+        const html = `<div style="transform: rotate(${{rotation}}deg); transform-origin: center center;">${{svg}}</div>`;
+        return L.divIcon({{ html: html, className: 'aircraft-icon', iconSize: [28, 28], iconAnchor: [14, 14], popupAnchor: [0, -14] }});
     }}
 
     function startAutoUpdate() {{
-        // Check if we're being served via HTTP (not file://)
-        const isHttp = window.location.protocol === 'http:' || window.location.protocol === 'https:';
-        
+        const isHttp = window.location.protocol.startsWith('http');
         if (isHttp) {{
-            // HTTP mode: fetch JSON data file
             updateMapData();
             setInterval(updateMapData, 1000);
         }} else {{
-            // file:// mode: use embedded data (will update when HTML is regenerated)
-            // Update markers with embedded data every second
-            setInterval(function() {{
-                updateMarkers(embeddedPositionsData);
-            }}, 1000);
+            setInterval(() => updateMarkers(embeddedPositionsData), 1000);
         }}
     }}
-    
+
     function updateMapData() {{
-        // Fetch JSON data file (works when served via HTTP)
         fetch('{json_filename}?t=' + new Date().getTime())
-            .then(response => response.json())
+            .then(r => r.json())
             .then(data => {{
-                embeddedPositionsData = data; // Update embedded data
-                
-                // IMPORTANT: currentICAOs should ONLY come from adsb_current.csv (embedded set)
-                // Do NOT recalculate from timestamps - this ensures aircraft in adsb_current.csv
-                // always show markers, regardless of timestamp age
-                // The embedded currentICAOs set is the source of truth
-                
+                embeddedPositionsData = data;
                 updateMarkers(data);
             }})
-            .catch(error => {{
-                console.log('Update failed:', error);
-            }});
+            .catch(e => console.log('Update failed:', e));
     }}
-    
+
     function updateMarkers(positions) {{
         if (!markerLayer || !lineLayer) return;
-        
-        // CRITICAL: ENSURE HOME MARKER IS ALWAYS PRESENT - CHECK FIRST, BEFORE ANYTHING ELSE
+
         const mapObj = markerLayer._map;
-        if (mapObj) {{
-            if (!homeMarker) {{
-                // Home marker doesn't exist, create it
-                const homeLat = '{home_lat_str}';
-                const homeLon = '{home_lon_str}';
-                if (homeLat && homeLon && homeLat !== '' && homeLon !== '') {{
-                    try {{
-                        const lat = parseFloat(homeLat);
-                        const lon = parseFloat(homeLon);
-                        if (!isNaN(lat) && !isNaN(lon)) {{
-                            const homeIcon = L.divIcon({{
-                                className: 'home-marker',
-                                html: '<div style="background-color: red; border: 2px solid white; border-radius: 50%; width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 18px; color: white; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">H</div>',
-                                iconSize: [30, 30],
-                                iconAnchor: [15, 15]
-                            }});
-                            homeMarker = L.marker([lat, lon], {{
-                                icon: homeIcon
-                            }}).bindPopup('<b>Home Position</b>');
-                            mapObj.addLayer(homeMarker);
-                            console.log('HOME MARKER RE-CREATED at:', lat, lon);
-                        }}
-                    }} catch(e) {{
-                        console.log('Could not create home marker:', e);
-                    }}
-                }}
-            }} else if (!mapObj.hasLayer(homeMarker)) {{
-                // Home marker exists but not on map, re-add it
-                console.log('Home marker missing from map, re-adding it!');
-                mapObj.addLayer(homeMarker);
-            }}
+        if (mapObj && homeMarker && !mapObj.hasLayer(homeMarker)) {{
+            mapObj.addLayer(homeMarker);
         }}
-        
-        console.log('=== updateMarkers called with', positions.length, 'positions ===');
-        console.log('currentICAOs (from adsb_current.csv):', Array.from(currentICAOs));
-        console.log('currentICAOs size:', currentICAOs.size);
-        console.log('currentICAOs.has(4405EA):', currentICAOs.has('4405EA'));
-        console.log('currentICAOs.has(4CA88C):', currentICAOs.has('4CA88C'));
-        
-        // Group by ICAO
+
         const icaoGroups = {{}};
         positions.forEach(pos => {{
-            if (!icaoGroups[pos.icao]) {{
-                icaoGroups[pos.icao] = [];
-            }}
+            if (!icaoGroups[pos.icao]) icaoGroups[pos.icao] = [];
             icaoGroups[pos.icao].push(pos);
         }});
-        
-        console.log('ICAO groups in data:', Object.keys(icaoGroups));
-        console.log('ICAOs that should have markers:', Array.from(currentICAOs).filter(icao => icaoGroups[icao]));
-        
-        // Update stats
+
         const statsEl = document.getElementById('map-stats');
         if (statsEl) {{
             statsEl.textContent = `Aircraft: ${{Object.keys(icaoGroups).length}} | Positions: ${{positions.length}} | Current: ${{currentICAOs.size}}`;
         }}
-        
-        // CRITICAL: Remove markers for aircraft that are NOT in currentICAOs (adsb_current.csv)
-        // This ensures only aircraft in adsb_current.csv have markers
-        // BUT: Never touch the home marker!
+
         Object.keys(currentMarkers).forEach(icao => {{
             if (!currentICAOs.has(icao)) {{
-                console.log('Removing marker for ICAO not in adsb_current.csv:', icao);
-                const marker = currentMarkers[icao];
-                // Double-check: never remove home marker
-                if (marker !== homeMarker) {{
-                    markerLayer.removeLayer(marker);
-                    delete currentMarkers[icao];
-                }} else {{
-                    console.log('WARNING: Attempted to remove home marker - preserving it!');
-                }}
+                markerLayer.removeLayer(currentMarkers[icao]);
+                delete currentMarkers[icao];
             }}
         }});
-        
-        // Remove all lines and recreate them
+
         lineLayer.clearLayers();
         currentLines = {{}};
-        
-        // Process each aircraft
+
         Object.keys(icaoGroups).forEach(icao => {{
-            const posList = icaoGroups[icao];
-            // Sort by timestamp
-            posList.sort((a, b) => {{
-                return (a.timestamp_utc || '').localeCompare(b.timestamp_utc || '');
-            }});
-            
+            const posList = icaoGroups[icao].sort((a, b) => (a.timestamp_utc || '').localeCompare(b.timestamp_utc || ''));
             const latest = posList[posList.length - 1];
             const color = getAltitudeColor(latest.altitude_ft);
-            
-            // Only show marker for aircraft in adsb_current.csv (currentICAOs set)
             const isCurrent = currentICAOs.has(icao);
-            
-            console.log('ICAO:', icao, 'isCurrent (in adsb_current.csv):', isCurrent, 'currentICAOs.has:', currentICAOs.has(icao));
-            
+
             if (isCurrent) {{
-                // This aircraft is in adsb_current.csv, so it should have a marker
-                console.log('*** PROCESSING CURRENT AIRCRAFT:', icao, 'at', latest.lat, latest.lon, 'altitude:', latest.altitude_ft);
-
-                // Build popup text with aircraft info from database
                 const acInfo = getAircraftInfo(icao);
-                let popupText = `<b>ICAO:</b> ${{latest.icao}}<br>`;
-                if (acInfo && acInfo.registration) popupText += `<b>Reg:</b> ${{acInfo.registration}}<br>`;
-                if (acInfo && acInfo.type) popupText += `<b>Type:</b> ${{acInfo.type}}<br>`;
-                if (acInfo && acInfo.model) popupText += `<b>Model:</b> ${{acInfo.model}}<br>`;
-                if (latest.flight) popupText += `<b>Flight:</b> ${{latest.flight}}<br>`;
-                if (latest.altitude_ft) popupText += `<b>Altitude:</b> ${{latest.altitude_ft.toLocaleString()}} ft<br>`;
-                if (latest.speed_kts) popupText += `<b>Speed:</b> ${{Math.round(latest.speed_kts)}} kts<br>`;
-                if (latest.heading_deg !== null && latest.heading_deg !== undefined) popupText += `<b>Heading:</b> ${{Math.round(latest.heading_deg)}}°<br>`;
-                if (latest.squawk) popupText += `<b>Squawk:</b> ${{latest.squawk}}<br>`;
-                if (latest.timestamp_utc) popupText += `<b>Spotted:</b> ${{formatTimeAgo(latest.timestamp_utc)}}<br>`;
+                let popup = `<b>ICAO:</b> ${{latest.icao}}<br>`;
+                if (acInfo && acInfo.registration) popup += `<b>Reg:</b> ${{acInfo.registration}}<br>`;
+                if (acInfo && acInfo.type) popup += `<b>Type:</b> ${{acInfo.type}}<br>`;
+                if (acInfo && acInfo.model) popup += `<b>Model:</b> ${{acInfo.model}}<br>`;
+                if (latest.flight) popup += `<b>Flight:</b> ${{latest.flight}}<br>`;
+                if (latest.altitude_ft) popup += `<b>Altitude:</b> ${{latest.altitude_ft.toLocaleString()}} ft<br>`;
+                if (latest.speed_kts) popup += `<b>Speed:</b> ${{Math.round(latest.speed_kts)}} kts<br>`;
+                if (latest.heading_deg != null) popup += `<b>Heading:</b> ${{Math.round(latest.heading_deg)}}°<br>`;
+                if (latest.squawk) popup += `<b>Squawk:</b> ${{latest.squawk}}<br>`;
+                if (latest.timestamp_utc) popup += `<b>Spotted:</b> ${{formatTimeAgo(latest.timestamp_utc)}}<br>`;
+                popup += `<b>Distance:</b> ${{formatDistance(calculate3DDistance(latest.lat, latest.lon, latest.altitude_ft))}}`;
 
-                // Calculate and add 3D distance from home
-                const distance3D = calculate3DDistance(latest.lat, latest.lon, latest.altitude_ft);
-                popupText += `<b>Distance:</b> ${{formatDistance(distance3D)}}`;
-
-                // Update existing marker or create new one
                 if (currentMarkers[icao]) {{
-                    console.log('Updating existing marker for:', icao);
-                    // Update existing marker position and popup
                     currentMarkers[icao].setLatLng([latest.lat, latest.lon]);
-                    currentMarkers[icao].setPopupContent(popupText);
-
-                    // Update SVG icon with new heading/altitude
-                    const newIcon = createSvgIcon(icao, latest.altitude_ft, latest.heading_deg);
-                    currentMarkers[icao].setIcon(newIcon);
-                    console.log('Marker updated for:', icao);
+                    currentMarkers[icao].setPopupContent(popup);
+                    currentMarkers[icao].setIcon(createSvgIcon(icao, latest.altitude_ft, latest.heading_deg));
                 }} else {{
-                    // Create new marker for aircraft in adsb_current.csv
-                    console.log('*** CREATING NEW MARKER for ICAO:', icao, 'at', latest.lat, latest.lon);
-
-                    try {{
-                        const svgIcon = createSvgIcon(icao, latest.altitude_ft, latest.heading_deg);
-                        const marker = L.marker([latest.lat, latest.lon], {{
-                            icon: svgIcon
-                        }}).bindPopup(popupText);
-                        markerLayer.addLayer(marker);
-                        currentMarkers[icao] = marker;
-                        console.log('*** AIRCRAFT MARKER SUCCESSFULLY CREATED for ICAO:', icao, 'type:', getAircraftIconType(icao));
-                    }} catch(e) {{
-                        console.error('ERROR creating marker for', icao, ':', e);
-                    }}
+                    const marker = L.marker([latest.lat, latest.lon], {{ icon: createSvgIcon(icao, latest.altitude_ft, latest.heading_deg) }}).bindPopup(popup);
+                    markerLayer.addLayer(marker);
+                    currentMarkers[icao] = marker;
                 }}
             }}
-            
-            // Draw trajectory line if multiple positions (for ALL aircraft, current and historical)
+
             if (posList.length > 1) {{
                 const coords = posList.map(p => [p.lat, p.lon]);
-                // Use altitude-based color for all lines, but different opacity
-                // Current aircraft: full opacity (0.6), historical: semi-transparent (0.3)
-                const lineOpacity = isCurrent ? 0.6 : 0.3;
-                const line = L.polyline(coords, {{
-                    color: color,  // Always use altitude-based color
-                    weight: 2,
-                    opacity: lineOpacity
-                }}).bindPopup(`Trajectory: ${{icao}} (${{posList.length}} points)`);
+                const line = L.polyline(coords, {{ color: color, weight: 2, opacity: isCurrent ? 0.6 : 0.3 }})
+                    .bindPopup(`Trajectory: ${{icao}} (${{posList.length}} points)`);
                 lineLayer.addLayer(line);
                 currentLines[icao] = line;
             }}
         }});
-        
-        // FINAL CHECK: Ensure home marker is still on map after all updates
-        if (homeMarker && mapObj && !mapObj.hasLayer(homeMarker)) {{
-            console.log('Home marker lost during update, re-adding it!');
-            mapObj.addLayer(homeMarker);
-        }}
-        
-        console.log('updateMarkers complete. Total markers on map:', Object.keys(currentMarkers).length, 'ICAOs:', Object.keys(currentMarkers));
     }}
     </script>
     '''
     m.get_root().html.add_child(folium.Element(update_js))
-    
+
     # Save map
     m.save(output_path)
     print(f"Map saved to: {output_path}")
-    print(f"Open it in your browser. The map file updates automatically without page reload.")
 
 
 def main():
@@ -1266,220 +623,98 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Plot current positions with historical trajectories
-  python3 plot_map.py
-
-  # Plot all historical positions
-  python3 plot_map.py --historical
-
-  # Plot trajectory for specific aircraft
-  python3 plot_map.py --icao 3C5EF2
-
-  # Current positions only (no historical trajectories)
-  python3 plot_map.py --no-history
-
-  # Custom CSV file
-  python3 plot_map.py --csv custom_positions.csv
+  python3 plot_map.py                    # Current positions with trajectories
+  python3 plot_map.py --historical       # All historical positions
+  python3 plot_map.py --icao 3C5EF2      # Specific aircraft trajectory
+  python3 plot_map.py --no-history       # Current positions only
+  python3 plot_map.py --home-address "Milan, Italy"  # Set home location
         """
     )
-    
-    parser.add_argument(
-        "--csv",
-        default=None,
-        help="Path to CSV file (default: adsb_current.csv or adsb_history.csv)"
-    )
-    parser.add_argument(
-        "--historical",
-        action="store_true",
-        help="Use historical CSV file (adsb_history.csv) instead of current"
-    )
-    parser.add_argument(
-        "--no-history",
-        action="store_true",
-        help="Don't load historical data for trajectories (current positions only)"
-    )
-    parser.add_argument(
-        "--icao",
-        default=None,
-        help="Filter to specific ICAO hex code"
-    )
-    parser.add_argument(
-        "--output",
-        default="adsb_map.html",
-        help="Output HTML file path (default: adsb_map.html)"
-    )
-    parser.add_argument(
-        "--title",
-        default=None,
-        help="Map title (default: auto-generated)"
-    )
-    parser.add_argument(
-        "--refresh",
-        type=int,
-        default=0,
-        help="Auto-refresh interval in seconds (default: 0 = disabled, map updates via file regeneration)"
-    )
-    parser.add_argument(
-        "--home-lat",
-        type=float,
-        default=None,
-        help="Home position latitude (or set ADSB_HOME_LAT env var)"
-    )
-    parser.add_argument(
-        "--home-lon",
-        type=float,
-        default=None,
-        help="Home position longitude (or set ADSB_HOME_LON env var)"
-    )
-    parser.add_argument(
-        "--setup-home",
-        action="store_true",
-        help="Interactive setup for home location (geocode address, get elevation)"
-    )
-    parser.add_argument(
-        "--home-address",
-        type=str,
-        default=None,
-        help="Set home location by address (geocode and save). Example: --home-address 'Milan, Italy'"
-    )
+
+    parser.add_argument("--csv", default=None, help="Path to CSV file")
+    parser.add_argument("--historical", action="store_true", help="Use historical CSV file")
+    parser.add_argument("--no-history", action="store_true", help="Don't load historical data")
+    parser.add_argument("--icao", default=None, help="Filter to specific ICAO hex code")
+    parser.add_argument("--output", default=None, help="Output HTML file path")
+    parser.add_argument("--title", default=None, help="Map title")
+    parser.add_argument("--refresh", type=int, default=0, help="Auto-refresh interval in seconds")
+    parser.add_argument("--home-lat", type=float, default=None, help="Home position latitude")
+    parser.add_argument("--home-lon", type=float, default=None, help="Home position longitude")
+    parser.add_argument("--setup-home", action="store_true", help="Interactive home location setup")
+    parser.add_argument("--home-address", type=str, default=None, help="Set home location by address")
 
     args = parser.parse_args()
 
-    # Handle --home-address flag (non-interactive)
+    # Handle --home-address flag
     if args.home_address:
-        print(f"Geocoding '{args.home_address}'...")
-        geo_result = geocode_address(args.home_address)
-        if not geo_result:
-            print("Could not find that location.")
-            sys.exit(1)
+        result = set_home_from_address(args.home_address)
+        sys.exit(0 if result else 1)
 
-        lat, lon = geo_result['lat'], geo_result['lon']
-        display_name = geo_result['display_name']
-        print(f"Found: {display_name}")
-        print(f"Coordinates: {lat:.6f}, {lon:.6f}")
-
-        print("Looking up elevation...")
-        elevation = get_elevation(lat, lon)
-        if elevation is None:
-            print("Could not determine elevation, using 0m")
-            elevation = 0.0
-        else:
-            print(f"Elevation: {elevation:.1f}m ({elevation * 3.28084:.0f}ft)")
-
-        home_config = {
-            'address': args.home_address,
-            'display_name': display_name,
-            'lat': lat,
-            'lon': lon,
-            'elevation_m': elevation,
-            'elevation_ft': elevation * 3.28084
-        }
-
-        with open(HOME_CONFIG_FILE, 'w') as f:
-            json.dump(home_config, f, indent=2)
-
-        print(f"\nHome location saved to: {HOME_CONFIG_FILE}")
-        sys.exit(0)
-
-    # Handle --setup-home flag (interactive)
+    # Handle --setup-home flag
     if args.setup_home:
         result = setup_home_location()
         if result:
             print("\nHome location configured successfully!")
-            print(f"  Address: {result['address']}")
-            print(f"  Location: {result['display_name']}")
-            print(f"  Coordinates: {result['lat']:.6f}, {result['lon']:.6f}")
-            print(f"  Elevation: {result['elevation_m']:.1f}m ({result['elevation_ft']:.0f}ft)")
         else:
             print("\nHome location setup cancelled or failed.")
         sys.exit(0)
-    
+
     # Determine CSV file
     if args.csv:
         csv_path = args.csv
-        # Still load historical data for trajectories unless --no-history is set
-        if not args.no_history:
-            historical_csv_path = os.getenv("ADSB_CSV_PATH", "adsb_history.csv")
-        else:
-            historical_csv_path = None
+        historical_csv_path = None if args.no_history else str(get_history_csv_path())
     elif args.historical:
-        csv_path = os.getenv("ADSB_CSV_PATH", "adsb_history.csv")
+        csv_path = str(get_history_csv_path())
         historical_csv_path = None
     else:
-        csv_path = os.getenv("ADSB_CURRENT_CSV_PATH", "adsb_current.csv")
-        # Load historical data for trajectories unless --no-history is set
-        if not args.no_history:
-            historical_csv_path = os.getenv("ADSB_CSV_PATH", "adsb_history.csv")
-        else:
-            historical_csv_path = None
-    
+        csv_path = str(get_current_csv_path())
+        historical_csv_path = None if args.no_history else str(get_history_csv_path())
+
+    # Determine output path
+    if args.output:
+        output_path = args.output
+    elif args.historical:
+        output_path = str(DEFAULT_MAP_HTML)
+    else:
+        output_path = str(DEFAULT_CURRENT_MAP_HTML) if args.csv else str(DEFAULT_MAP_HTML)
+
     # Read positions
     print(f"Reading positions from: {csv_path}")
     positions = read_csv_positions(csv_path)
-    
-    # If we have current positions and historical file exists, merge trajectories
+
+    # Merge historical trajectories if applicable
     if historical_csv_path and os.path.exists(historical_csv_path) and not args.historical:
         print(f"Loading historical trajectories from: {historical_csv_path}")
         historical_positions = read_csv_positions(historical_csv_path)
-        
+
         if historical_positions:
-            # Get ICAOs from current positions
             current_icaos = set(p["icao"] for p in positions)
-            
-            # Group historical positions by ICAO to find aircraft with trajectories
-            historical_by_icao = {}
-            for hist_pos in historical_positions:
-                icao = hist_pos["icao"]
-                if icao not in historical_by_icao:
-                    historical_by_icao[icao] = []
-                historical_by_icao[icao].append(hist_pos)
-            
-            # Determine whether to show all historical trajectories or only current aircraft
-            # When --csv is used (current map): only show trajectories for current aircraft
-            # When no --csv (main map): show ALL historical trajectories
             show_all_history = not args.csv
 
             for hist_pos in historical_positions:
-                if show_all_history:
-                    # Main map: add ALL historical positions
-                    if hist_pos["icao"] in current_icaos:
-                        # For current aircraft, avoid duplicates
-                        is_duplicate = any(
-                            p["icao"] == hist_pos["icao"] and
-                            abs(p["lat"] - hist_pos["lat"]) < 0.0001 and
-                            abs(p["lon"] - hist_pos["lon"]) < 0.0001
-                            for p in positions
-                        )
-                        if not is_duplicate:
-                            positions.append(hist_pos)
-                    else:
-                        # For non-current aircraft, add all positions
+                if show_all_history or hist_pos["icao"] in current_icaos:
+                    is_duplicate = any(
+                        p["icao"] == hist_pos["icao"] and
+                        abs(p["lat"] - hist_pos["lat"]) < 0.0001 and
+                        abs(p["lon"] - hist_pos["lon"]) < 0.0001
+                        for p in positions
+                    )
+                    if not is_duplicate:
                         positions.append(hist_pos)
-                else:
-                    # Current map: only add historical positions for current aircraft
-                    if hist_pos["icao"] in current_icaos:
-                        is_duplicate = any(
-                            p["icao"] == hist_pos["icao"] and
-                            abs(p["lat"] - hist_pos["lat"]) < 0.0001 and
-                            abs(p["lon"] - hist_pos["lon"]) < 0.0001
-                            for p in positions
-                        )
-                        if not is_duplicate:
-                            positions.append(hist_pos)
-            
-            print(f"Loaded {len(historical_positions)} historical positions for {len(historical_by_icao)} aircraft")
-    
+
+            print(f"Loaded {len(historical_positions)} historical positions")
+
     if not positions:
         print("No positions found.", file=sys.stderr)
         sys.exit(1)
-    
+
     # Filter by ICAO if specified
     if args.icao:
         positions = [p for p in positions if p["icao"].upper() == args.icao.upper()]
         if not positions:
             print(f"No positions found for ICAO: {args.icao}", file=sys.stderr)
             sys.exit(1)
-    
+
     # Generate title
     if args.title:
         title = args.title
@@ -1489,48 +724,34 @@ Examples:
         title = "ADS-B Historical Positions"
     else:
         title = "ADS-B Current Positions with Trajectories"
-    
-    # Determine current ICAOs (aircraft with recent positions) for marker display
+
+    # Determine current ICAOs for marker display
     current_icaos_for_map = set()
     if not args.historical:
-        # Read current CSV to get current ICAOs
-        current_csv_path = os.getenv("ADSB_CURRENT_CSV_PATH", "adsb_current.csv")
-        if os.path.exists(current_csv_path):
-            current_only = read_csv_positions(current_csv_path)
+        current_csv_path = get_current_csv_path()
+        if current_csv_path.exists():
+            current_only = read_csv_positions(str(current_csv_path))
             current_icaos_for_map = set(p["icao"] for p in current_only)
-            print(f"Current ICAOs from {current_csv_path}: {current_icaos_for_map}")
-            
-            # CRITICAL: Ensure positions from adsb_current.csv are in the positions list
-            # Add current positions if they're not already there (by ICAO and coordinates)
-            # This ensures markers can be created for aircraft in adsb_current.csv
-            current_positions_by_icao = {p["icao"]: p for p in current_only}
-            for icao, current_pos in current_positions_by_icao.items():
-                # Check if this position is already in the positions list
+
+            # Ensure current positions are in the data
+            for icao, current_pos in {p["icao"]: p for p in current_only}.items():
                 is_duplicate = any(
-                    p["icao"] == icao and 
+                    p["icao"] == icao and
                     abs(p["lat"] - current_pos["lat"]) < 0.0001 and
                     abs(p["lon"] - current_pos["lon"]) < 0.0001
                     for p in positions
                 )
                 if not is_duplicate:
-                    # Add the current position to ensure it's in the embedded data
-                    positions.insert(0, current_pos)  # Insert at beginning to prioritize current positions
-                    print(f"Added current position for ICAO {icao} to embedded data: lat={current_pos['lat']}, lon={current_pos['lon']}")
-                else:
-                    print(f"Current position for ICAO {icao} already in positions list")
-    
-    # Set home position from args or environment variables
+                    positions.insert(0, current_pos)
+
+    # Set home position from args
     if args.home_lat and args.home_lon:
         os.environ["ADSB_HOME_LAT"] = str(args.home_lat)
         os.environ["ADSB_HOME_LON"] = str(args.home_lon)
-    
-    print(f"Total positions for map: {len(positions)}, ICAOs: {len(set(p['icao'] for p in positions))}")
-    print(f"Current ICAOs for markers: {current_icaos_for_map}")
-    
-    # Create map (will show markers for current aircraft, lines for all)
-    create_map(positions, args.output, title, args.refresh, current_icaos_for_map)
+
+    print(f"Total positions: {len(positions)}, ICAOs: {len(set(p['icao'] for p in positions))}")
+    create_map(positions, output_path, title, args.refresh, current_icaos_for_map)
 
 
 if __name__ == "__main__":
     main()
-

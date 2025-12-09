@@ -1,20 +1,34 @@
 # Python
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.Python
+*.so
 
-# Generated data files
-adsb_history.csv
-adsb_current.csv
-adsb_map.html
-adsb_map_data.json
-adsb_current_map.html
-adsb_current_map_data.json
+# Output files (generated data and maps)
+output/
+
+# User configuration (contains personal location)
+config/
 
 # Aircraft database (90MB, downloaded separately)
 data/
 
-# User configuration (contains personal location)
-home_location.json
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
 
 # Claude Code
 .claude/
+
+# macOS
+.DS_Store
+
+# Environment
+.env
+.venv/
+env/
+venv/

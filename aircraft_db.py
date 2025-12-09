@@ -3,56 +3,62 @@
 Aircraft database lookup for ADS-B visualization.
 
 Maps ICAO hex codes to aircraft types and determines appropriate icons.
-Uses the OpenSky Network aircraft database or compatible CSV format.
+Uses the tar1090 aircraft database (CSV format).
+
+Usage:
+    # As a module
+    from aircraft_db import get_aircraft_info, get_aircraft_icon
+
+    # As a CLI tool
+    python3 aircraft_db.py 4B4437
 """
 
 import csv
-import os
-from typing import Dict, Optional, Tuple
+import sys
+from typing import Dict, Optional
 
-# Aircraft type categories for icon selection (matching SVG filenames in icons/)
-ICON_AIRLINER = "plane"           # Commercial airliners (A320, B737, etc.)
-ICON_HELICOPTER = "helicopter"     # Helicopters
-ICON_GLIDER = "glider"             # Gliders/sailplanes
-ICON_LIGHT = "light"               # Light aircraft (Cessna, Piper, etc.)
-ICON_UNKNOWN = "plane"             # Unknown/default
+from src.lib.config import AIRCRAFT_DB_FILE
 
-# Type designator prefixes/patterns that indicate aircraft category
+# Aircraft type categories for icon selection (matching SVG filenames in assets/icons/)
+ICON_AIRLINER = "plane"
+ICON_HELICOPTER = "helicopter"
+ICON_GLIDER = "glider"
+ICON_LIGHT = "light"
+ICON_UNKNOWN = "plane"
+
+# Type designator patterns that indicate aircraft category
 # Based on ICAO type designators
+
 HELICOPTER_TYPES = {
     # Airbus Helicopters
     'AS35', 'AS50', 'AS55', 'AS65', 'EC20', 'EC25', 'EC30', 'EC35', 'EC45',
-    'EC55', 'EC75', 'EC13', 'EC15', 'EC55', 'EC63', 'EC65', 'H120', 'H125',
+    'EC55', 'EC75', 'EC13', 'EC15', 'EC63', 'EC65', 'H120', 'H125',
     'H130', 'H135', 'H145', 'H155', 'H160', 'H175', 'H215', 'H225',
     # Bell
     'B06', 'B06T', 'B105', 'B204', 'B205', 'B206', 'B209', 'B212', 'B214',
-    'B222', 'B230', 'B222', 'B407', 'B412', 'B429', 'B430', 'B505', 'B525',
+    'B222', 'B230', 'B407', 'B412', 'B429', 'B430', 'B505', 'B525',
     # Robinson
     'R22', 'R44', 'R66',
     # Sikorsky
     'S55', 'S58', 'S61', 'S64', 'S65', 'S70', 'S76', 'S92',
     # Leonardo/AgustaWestland
     'A109', 'A119', 'A139', 'A149', 'A169', 'A189', 'AW09', 'AW10', 'AW13',
-    'AW13', 'AW16', 'AW18', 'AW19',
+    'AW16', 'AW18', 'AW19',
     # MD Helicopters
     'MD52', 'MD60', 'MD90', 'EXPL', 'NOTR',
     # Eurocopter (older designations)
     'BK17', 'BO10', 'GAZL', 'LAMA', 'PUMA', 'SA31', 'SA34', 'SA36', 'SA37',
-    # Generic helicopter indicators
+    # Generic
     'HELI', 'GYRO',
 }
 
 GLIDER_TYPES = {
-    # Common glider designators
     'GLID', 'GL', 'ASW', 'ASK', 'ASH', 'DG', 'LS', 'SZD', 'PIK', 'PW5',
     'NIMB', 'DISC', 'VENT', 'JANT', 'ARCX', 'DUO', 'ARCS',
-    # Sailplane manufacturers
     'SLIN', 'GRAB', 'GLAS', 'SPER', 'STEM', 'G102', 'G103', 'G109',
-    # Hang gliders / paragliders (rare in ADS-B)
     'ULAC',
 }
 
-# Common airliner type designators (partial list of major types)
 AIRLINER_TYPES = {
     # Airbus
     'A10', 'A19', 'A20', 'A21', 'A30', 'A31', 'A32', 'A33', 'A34', 'A35',
@@ -66,17 +72,15 @@ AIRLINER_TYPES = {
     # Embraer
     'E70', 'E75', 'E90', 'E95', 'E170', 'E175', 'E190', 'E195', 'E290', 'E295',
     # Bombardier
-    'CRJ', 'CRJ1', 'CRJ2', 'CRJ7', 'CRJ9', 'CRJX',
-    'BCS1', 'BCS3',  # A220
+    'CRJ', 'CRJ1', 'CRJ2', 'CRJ7', 'CRJ9', 'CRJX', 'BCS1', 'BCS3',
     # ATR
     'AT43', 'AT45', 'AT72', 'AT75', 'AT76', 'ATR',
-    # Other regional/airliners
+    # Other
     'DH8', 'DHC8', 'MD80', 'MD81', 'MD82', 'MD83', 'MD87', 'MD88', 'MD90',
     'DC9', 'DC10', 'MD11', 'L101', 'F100', 'F70', 'BAE1', 'RJ', 'AVRO',
     'AN24', 'AN26', 'IL76', 'IL96', 'TU15', 'TU20', 'TU21', 'TU22',
 }
 
-# Light aircraft patterns (single/twin engine propeller aircraft)
 LIGHT_AIRCRAFT_PATTERNS = {
     # Cessna
     'C1', 'C2', 'C3', 'C4', 'C5', 'C6', 'C7', 'C8',
@@ -97,23 +101,62 @@ LIGHT_AIRCRAFT_PATTERNS = {
     'DA20', 'DA40', 'DA42', 'DA50', 'DA62', 'DV20',
     # Mooney
     'M20',
-    # Other light aircraft
+    # Other
     'AA5', 'DR40', 'PA11', 'J3', 'RV', 'VANS', 'TOBA', 'TB', 'TB20', 'TB21',
     'AQUI', 'SONI', 'RALL', 'ROBIN', 'CAP', 'EXTR',
 }
 
 
+def get_icon_for_type(type_code: str) -> str:
+    """
+    Determine the appropriate icon based on aircraft type designator.
+
+    Args:
+        type_code: ICAO aircraft type designator (e.g., "B738", "R44", "C172")
+
+    Returns:
+        Icon name matching SVG filename (plane, helicopter, light, glider)
+    """
+    if not type_code:
+        return ICON_UNKNOWN
+
+    type_upper = type_code.upper().strip()
+
+    # Check helicopters first (most specific)
+    for heli_type in HELICOPTER_TYPES:
+        if type_upper.startswith(heli_type) or type_upper == heli_type:
+            return ICON_HELICOPTER
+
+    # Check gliders
+    for glider_type in GLIDER_TYPES:
+        if type_upper.startswith(glider_type) or type_upper == glider_type:
+            return ICON_GLIDER
+
+    # Check airliners
+    for airliner_type in AIRLINER_TYPES:
+        if type_upper.startswith(airliner_type) or type_upper == airliner_type:
+            return ICON_AIRLINER
+
+    # Check light aircraft
+    for light_type in LIGHT_AIRCRAFT_PATTERNS:
+        if type_upper.startswith(light_type) or type_upper == light_type:
+            return ICON_LIGHT
+
+    # Default to airliner (most common in ADS-B)
+    return ICON_UNKNOWN
+
+
 class AircraftDatabase:
     """Aircraft database for looking up ICAO hex codes."""
 
-    def __init__(self, db_path: Optional[str] = None):
+    def __init__(self, db_path=None):
         """
         Initialize the aircraft database.
 
         Args:
             db_path: Path to CSV database file. If None, uses default location.
         """
-        self.db_path = db_path or os.path.join(os.path.dirname(__file__), "data", "aircraft_db.csv")
+        self.db_path = db_path or AIRCRAFT_DB_FILE
         self._cache: Dict[str, Dict[str, str]] = {}
         self._loaded = False
 
@@ -127,7 +170,7 @@ class AircraftDatabase:
         if self._loaded:
             return True
 
-        if not os.path.exists(self.db_path):
+        if not self.db_path.exists():
             print(f"Aircraft database not found: {self.db_path}")
             return False
 
@@ -178,7 +221,7 @@ class AircraftDatabase:
             icao_hex: 6-character ICAO hex code
 
         Returns:
-            Icon name for FontAwesome (e.g., "plane", "helicopter")
+            Icon name (plane, helicopter, light, glider)
         """
         info = self.lookup(icao_hex)
 
@@ -189,46 +232,7 @@ class AircraftDatabase:
         return ICON_UNKNOWN
 
 
-def get_icon_for_type(type_code: str) -> str:
-    """
-    Determine the appropriate icon based on aircraft type designator.
-
-    Args:
-        type_code: ICAO aircraft type designator (e.g., "B738", "R44", "C172")
-
-    Returns:
-        Icon name for FontAwesome
-    """
-    if not type_code:
-        return ICON_UNKNOWN
-
-    type_upper = type_code.upper().strip()
-
-    # Check helicopters first (most specific)
-    for heli_type in HELICOPTER_TYPES:
-        if type_upper.startswith(heli_type) or type_upper == heli_type:
-            return ICON_HELICOPTER
-
-    # Check gliders
-    for glider_type in GLIDER_TYPES:
-        if type_upper.startswith(glider_type) or type_upper == glider_type:
-            return ICON_GLIDER
-
-    # Check airliners
-    for airliner_type in AIRLINER_TYPES:
-        if type_upper.startswith(airliner_type) or type_upper == airliner_type:
-            return ICON_AIRLINER
-
-    # Check light aircraft
-    for light_type in LIGHT_AIRCRAFT_PATTERNS:
-        if type_upper.startswith(light_type) or type_upper == light_type:
-            return ICON_LIGHT
-
-    # Default to airliner icon for unknown types (most common in ADS-B)
-    return ICON_UNKNOWN
-
-
-# Global database instance
+# Global database instance (lazy-loaded singleton)
 _db: Optional[AircraftDatabase] = None
 
 
@@ -250,7 +254,7 @@ def get_aircraft_icon(icao_hex: str) -> str:
         icao_hex: 6-character ICAO hex code
 
     Returns:
-        Icon name for FontAwesome
+        Icon name (plane, helicopter, light, glider)
     """
     db = get_database()
     return db.get_icon(icao_hex)
@@ -272,9 +276,7 @@ def get_aircraft_info(icao_hex: str) -> Optional[Dict[str, str]]:
 
 
 if __name__ == "__main__":
-    # Test the module
-    import sys
-
+    # CLI mode - lookup aircraft by ICAO
     if len(sys.argv) > 1:
         icao = sys.argv[1]
         info = get_aircraft_info(icao)
@@ -291,5 +293,5 @@ if __name__ == "__main__":
         else:
             print("Not found in database")
     else:
-        print("Usage: python aircraft_db.py <ICAO_HEX>")
-        print("Example: python aircraft_db.py 4B4437")
+        print("Usage: python3 aircraft_db.py <ICAO_HEX>")
+        print("Example: python3 aircraft_db.py 4B4437")
