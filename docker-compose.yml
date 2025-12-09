@@ -94,9 +94,6 @@ services:
   adsb_map_live:
     image: python:3.11-slim
     container_name: adsb_map_live
-    depends_on:
-      dump1090_sim:
-        condition: service_started
     working_dir: /app
     volumes:
       - ./:/app
@@ -107,7 +104,7 @@ services:
         set -e
         python -m pip install --no-cache-dir -r requirements.txt
         echo 'starting collector...'
-        (python adsb_cli.py csv --host dump1090_sim --port 30003) &
+        (python adsb_cli.py csv --host ${ADSB_HOST:-127.0.0.1} --port ${ADSB_PORT:-30003}) &
         sleep 3
         echo 'starting watch_map...'
         (python watch_map.py --csv output/adsb_current.csv --output output/adsb_current_map.html --interval 2) &
@@ -133,6 +130,27 @@ services:
       python plot_map.py --historical --output output/adsb_map.html &&
       python portal.py &&
       python serve_map.py --host 0.0.0.0 --port 8000
+      "
+
+# Visualizador en vivo leyendo desde la base de datos (sin simulador)
+  adsb_view_db:
+    image: python:3.11-slim
+    container_name: adsb_view_db
+    working_dir: /app
+    volumes:
+      - ./:/app
+    ports:
+      - "8000:8000"
+    environment:
+      ADSB_DB_URL: postgresql://adsb:adsb@host.docker.internal:5432/adsb
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >
+      bash -lc "
+        set -e
+        python -m pip install --no-cache-dir -r requirements.txt
+        exec uvicorn api_main:app --host 0.0.0.0 --port 8000
       "
 
 # Sender service for a remote antenna (builds from Dockerfile.sender)

@@ -29,6 +29,7 @@ from src.lib.config import (
     CSV_COLUMNS,
     FLUSH_INTERVAL,
     RECONNECT_DELAY,
+    get_current_max_age,
     get_current_csv_path,
     get_db_url,
     get_dump1090_host,

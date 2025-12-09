@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADS-B Live Map (API)</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+    :root {
+      --bg: #0b1020;
+      --panel: rgba(0,0,0,0.6);
+      --muted: #9ca3af;
+    }
+    body { margin:0; padding:0; font-family: "Segoe UI", sans-serif; background:var(--bg); color:#e5e7eb; }
+    #map { width: 100vw; height: 100vh; }
+    .leaflet-control-container .leaflet-top.leaflet-left { margin-top: 50px; }
+    .banner { position: fixed; top: 10px; left: 10px; z-index: 1000; background: var(--panel); padding: 10px 12px; border-radius: 10px; border:1px solid rgba(255,255,255,0.1); backdrop-filter: blur(10px); }
+    .banner h1 { margin: 0; font-size: 16px; }
+    .banner .meta { font-size: 12px; color:var(--muted); }
+    .legend { margin-top:6px; font-size:11px; color:var(--muted); }
+    .legend span { display:inline-block; width:12px; height:12px; border-radius:2px; margin-right:4px; }
+    .popup { font-size: 13px; }
+    .popup .label { color: var(--muted); }
+  </style>
+</head>
+<body>
+  <div class="banner">
+    <h1>ADS-B Live (API)</h1>
+    <div class="meta" id="status">Cargando...</div>
+    <div class="legend">
+      <span style="background:#FF8C00"></span>0ft
+      <span style="background:#FFD700"></span>4k
+      <span style="background:#32CD32"></span>8k
+      <span style="background:#00CED1"></span>20k
+      <span style="background:#1E90FF"></span>30k
+      <span style="background:#9932CC"></span>40k+
+    </div>
+  </div>
+  <div id="map"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    const map = L.map('map').setView([0,0], 2);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19
+    }).addTo(map);
+    const markers = {};
+
+    const iconCache = new Map();
+    async function loadIcon(name) {
+      if (iconCache.has(name)) return iconCache.get(name);
+      try {
+        const r = await fetch(`/assets/icons/${name}.svg`);
+        if (!r.ok) throw new Error("not found");
+        const txt = await r.text();
+        iconCache.set(name, txt);
+        return txt;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    const colorStops = [
+      [0, "#FF8C00"],
+      [4000, "#FFD700"],
+      [8000, "#32CD32"],
+      [20000, "#00CED1"],
+      [30000, "#1E90FF"],
+      [40000, "#9932CC"],
+    ];
+    function altColor(ft) {
+      if (ft == null) return "#808080";
+      if (ft <= colorStops[0][0]) return colorStops[0][1];
+      if (ft >= colorStops[colorStops.length-1][0]) return colorStops[colorStops.length-1][1];
+      for (let i=0;i<colorStops.length-1;i++) {
+        const [a1,c1]=colorStops[i]; const [a2,c2]=colorStops[i+1];
+        if (ft>=a1 && ft<=a2) return Math.abs(ft-a1)<Math.abs(ft-a2)?c1:c2;
+      }
+      return "#808080";
+    }
+    async function svgIcon(iconName, color, heading) {
+      const rot = heading != null ? heading : 0;
+      let svg = await loadIcon(iconName);
+      if (!svg) svg = await loadIcon("plane");
+      if (!svg) svg = `<svg width="28" height="28" viewBox="0 0 64 64" fill="${color}"><path d="M32 4 L40 32 L32 28 L24 32 Z"></path><rect x="28" y="32" width="8" height="20" rx="2" fill="${color}"></rect></svg>`;
+      svg = svg.replace(/fill=\"#[0-9a-fA-F]{6}\"/g, `fill="${color}"`);
+      svg = svg.replace(/width=\"\d+\"/g, 'width="28"').replace(/height=\"\d+\"/g, 'height="28"');
+      const html = `<div style="transform: rotate(${rot}deg); filter: drop-shadow(1px 1px 2px rgba(0,0,0,0.6));">${svg}</div>`;
+      return L.divIcon({ html, className: 'aircraft', iconSize: [28,28], iconAnchor:[14,14] });
+    }
+
+    function fmt(num, unit) {
+      if (num == null) return "";
+      return `${Math.round(num)} ${unit}`;
+    }
+
+    async function update() {
+      try {
+        const resp = await fetch('/api/aircraft/current');
+        if (!resp.ok) throw new Error(resp.statusText);
+        const data = await resp.json();
+        document.getElementById('status').textContent = `Aviones: ${data.length} · ${new Date().toLocaleTimeString()}`;
+        let bounds = [];
+        for (const ac of data) {
+          if (ac.lat == null || ac.lon == null) return;
+          const key = ac.icao;
+          const latlng = [ac.lat, ac.lon];
+          bounds.push(latlng);
+          const color = altColor(ac.altitude_ft);
+          const iconName = ac.icon || "plane";
+          const icon = await svgIcon(iconName, color, ac.heading_deg);
+          const popup = `
+            <div class="popup">
+              <div><strong>${ac.icao}</strong> ${ac.flight || ""}</div>
+              ${ac.registration ? `<div class="label">Matrícula</div>${ac.registration}` : ""}
+              ${ac.type ? `<div class="label">Tipo</div>${ac.type}` : ""}
+              ${ac.model ? `<div class="label">Modelo</div>${ac.model}` : ""}
+              <div class="label">Altitud</div>${fmt(ac.altitude_ft,"ft")}
+              <div class="label">Velocidad</div>${fmt(ac.speed_kts,"kts")}
+              <div class="label">Rumbo</div>${fmt(ac.heading_deg,"°")}
+              <div class="label">Squawk</div>${ac.squawk||""}
+              <div class="label">TS</div>${ac.ts || ""}
+            </div>`;
+          if (markers[key]) {
+            markers[key].setLatLng(latlng).setIcon(icon).setPopupContent(popup);
+          } else {
+            markers[key] = L.marker(latlng, { icon }).addTo(map).bindPopup(popup);
+          }
+        }
+        if (bounds.length) {
+          map.fitBounds(bounds, { maxZoom: 9, animate: false });
+        }
+      } catch (e) {
+        document.getElementById('status').textContent = 'Error de API';
+        console.error(e);
+      }
+    }
+    update();
+    setInterval(update, 5000);
+  </script>
+</body>
+</html>
