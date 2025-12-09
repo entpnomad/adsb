@@ -144,32 +144,18 @@ def create_map(positions: List[Dict[str, Any]], output_path: str = "adsb_map.htm
     if not positions:
         print("No positions to plot.", file=sys.stderr)
         return
-    
-    # Calculate center of map from positions
-    # If we have current ICAOs, prioritize centering on those
-    if current_icaos:
-        current_positions = [p for p in positions if p["icao"] in current_icaos]
-        if current_positions:
-            lats = [p["lat"] for p in current_positions]
-            lons = [p["lon"] for p in current_positions]
-            center_lat = sum(lats) / len(lats)
-            center_lon = sum(lons) / len(lons)
-            print(f"Centering map on current aircraft: {len(current_positions)} positions")
-        else:
-            lats = [p["lat"] for p in positions]
-            lons = [p["lon"] for p in positions]
-            center_lat = sum(lats) / len(lats)
-            center_lon = sum(lons) / len(lons)
-    else:
-        lats = [p["lat"] for p in positions]
-        lons = [p["lon"] for p in positions]
-        center_lat = sum(lats) / len(lats)
-        center_lon = sum(lons) / len(lons)
-    
+
+    # Center map on home position, zoomed out to see all aircraft
+    home_lat = float(os.getenv("ADSB_HOME_LAT", "46.0359"))
+    home_lon = float(os.getenv("ADSB_HOME_LON", "8.9661"))
+    center_lat = home_lat
+    center_lon = home_lon
+    print(f"Centering map on home position: {center_lat}, {center_lon}")
+
     # Create map
     m = folium.Map(
         location=[center_lat, center_lon],
-        zoom_start=11,  # Slightly zoomed in to better see aircraft
+        zoom_start=9,  # Zoomed out to see all detected aircraft
         tiles="OpenStreetMap"
     )
     
