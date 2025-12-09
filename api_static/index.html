@@ -168,6 +168,28 @@
       return `${Math.round(num)} ${unit}`;
     }
 
+    function fmtRelative(ts) {
+      if (!ts) return "";
+      const d = new Date(ts);
+      if (Number.isNaN(d.getTime())) return "";
+      const diffSeconds = Math.max(0, (Date.now() - d.getTime()) / 1000);
+      if (diffSeconds < 5) return "Now";
+      if (diffSeconds < 60) return `${Math.round(diffSeconds)} seconds ago`;
+      const diffMinutes = diffSeconds / 60;
+      if (diffMinutes < 60) return `${Math.round(diffMinutes)} minutes ago`;
+      const diffHours = diffMinutes / 60;
+      if (diffHours < 48) return `${Math.round(diffHours)} hours ago`;
+      const diffDays = diffHours / 24;
+      return `${Math.round(diffDays)} days ago`;
+    }
+
+    function fmtTime(ts) {
+      if (!ts) return "";
+      const d = new Date(ts);
+      if (Number.isNaN(d.getTime())) return ts;
+      return d.toLocaleString();
+    }
+
     let windowSeconds = 300;
     let hasFit = false;
     let userMoved = false;
@@ -246,14 +268,14 @@
         fillColor: "#10b981",
         fillOpacity: 0.9,
         weight: 2
-      }).bindTooltip(`Start ${start.ts || ""}`, { direction: "top" }).addTo(fullRouteLayer);
+      }).bindTooltip(`Start ${fmtTime(start.ts)}`, { direction: "top" }).addTo(fullRouteLayer);
       L.circleMarker([end.lat, end.lon], {
         radius: 5,
         color: "#ef4444",
         fillColor: "#ef4444",
         fillOpacity: 0.9,
         weight: 2
-      }).bindTooltip(`End ${end.ts || ""}`, { direction: "top" }).addTo(fullRouteLayer);
+      }).bindTooltip(`End ${fmtTime(end.ts)}`, { direction: "top" }).addTo(fullRouteLayer);
       const bounds = fullRouteLayer.getBounds();
       if (bounds.isValid()) {
         map.fitBounds(bounds, { padding: [24, 24], maxZoom: 9, animate: false });
@@ -279,7 +301,7 @@
         if (!resp.ok) throw new Error(resp.statusText);
         const data = await resp.json();
         renderFullRoute(data);
-        const windowText = data.start_ts && data.end_ts ? `${data.start_ts} -> ${data.end_ts}` : 'n/a';
+        const windowText = data.start_ts && data.end_ts ? `${fmtTime(data.start_ts)} -> ${fmtTime(data.end_ts)}` : 'n/a';
         statusEl.textContent = `Route ${data.icao}: ${data.count} points (${windowText})`;
       } catch (err) {
         fullRouteLayer.clearLayers();
@@ -314,6 +336,7 @@
           const icon = await svgIcon(iconName, color, ac.heading_deg);
           const adsbxLink = `https://globe.adsbexchange.com/?icao=${(ac.icao || "").toLowerCase()}`;
           const fr24Link = ac.registration ? `https://www.flightradar24.com/data/aircraft/${ac.registration.toLowerCase()}` : null;
+          const spotted = fmtRelative(ac.ts) || fmtTime(ac.ts) || "";
           const linksHtml = `
               <div class="links">
                 <a href="${adsbxLink}" target="_blank" rel="noreferrer noopener">ADSBexchange</a>
@@ -329,7 +352,7 @@
               <div class="label">Speed</div>${fmt(ac.speed_kts,"kts")}
               <div class="label">Heading</div>${fmt(ac.heading_deg,"deg")}
               <div class="label">Squawk</div>${ac.squawk || ""}
-              <div class="label">Timestamp</div>${ac.ts || ""}
+              <div class="label">Spotted</div>${spotted}
               ${linksHtml}
             </div>`;
           if (markers[key]) {
