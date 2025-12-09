@@ -1,0 +1,18 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN python -m pip install --no-cache-dir -r requirements.txt
+
+# Copiamos solo el código (sin output/ ni data/)
+COPY adsb_cli.py adsb_to_db.py adsb_to_csv.py aircraft_db.py serve_map.py plot_map.py watch_map.py simulate_stream.py portal.py adsb.sh SPEC.md README.md ./
+COPY src ./src
+COPY assets ./assets
+
+# Valores por defecto para leer dump1090 local
+ENV ADSB_HOST=127.0.0.1
+ENV ADSB_PORT=30003
+
+# ADSB_DB_URL debe venir de fuera
+ENTRYPOINT ["python", "adsb_cli.py", "db", "--stream"]

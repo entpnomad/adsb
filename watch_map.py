@@ -37,63 +37,52 @@ def watch_and_update(csv_path: str, output_path: str = None,
     if not historical:
         historical_csv_path = str(get_history_csv_path())
 
-    last_size = 0
-    update_count = 0
-
     try:
         while True:
+            positions = []
             if os.path.exists(csv_path):
-                current_size = os.path.getsize(csv_path)
+                positions = read_csv_positions(csv_path)
 
-                if current_size != last_size or update_count == 0:
-                    # File changed or first run
-                    positions = read_csv_positions(csv_path)
+            # Merge historical data for trajectories
+            if positions and historical_csv_path and os.path.exists(historical_csv_path) and not historical:
+                historical_positions = read_csv_positions(historical_csv_path)
 
-                    # Merge historical data for trajectories
-                    if positions and historical_csv_path and os.path.exists(historical_csv_path) and not historical:
-                        historical_positions = read_csv_positions(historical_csv_path)
+                if historical_positions:
+                    current_icaos = set(p["icao"] for p in positions)
 
-                        if historical_positions:
-                            current_icaos = set(p["icao"] for p in positions)
+                    for hist_pos in historical_positions:
+                        if hist_pos["icao"] in current_icaos:
+                            is_duplicate = any(
+                                p["icao"] == hist_pos["icao"] and
+                                abs(p["lat"] - hist_pos["lat"]) < 0.0001 and
+                                abs(p["lon"] - hist_pos["lon"]) < 0.0001
+                                for p in positions
+                            )
+                            if not is_duplicate:
+                                positions.append(hist_pos)
+                        else:
+                            positions.append(hist_pos)
 
-                            for hist_pos in historical_positions:
-                                if hist_pos["icao"] in current_icaos:
-                                    is_duplicate = any(
-                                        p["icao"] == hist_pos["icao"] and
-                                        abs(p["lat"] - hist_pos["lat"]) < 0.0001 and
-                                        abs(p["lon"] - hist_pos["lon"]) < 0.0001
-                                        for p in positions
-                                    )
-                                    if not is_duplicate:
-                                        positions.append(hist_pos)
-                                else:
-                                    positions.append(hist_pos)
+            if positions:
+                title = "ADS-B Current Positions with Trajectories" if not historical else "ADS-B Historical Positions"
 
-                    if positions:
-                        title = "ADS-B Current Positions with Trajectories" if not historical else "ADS-B Historical Positions"
+                # Determine current ICAOs for marker display
+                current_icaos_for_map = set()
+                if not historical:
+                    current_csv_path = get_current_csv_path()
+                    if current_csv_path.exists():
+                        current_only = read_csv_positions(str(current_csv_path))
+                        current_icaos_for_map = set(p["icao"] for p in current_only)
 
-                        # Determine current ICAOs for marker display
-                        current_icaos_for_map = set()
-                        if not historical:
-                            current_csv_path = get_current_csv_path()
-                            if current_csv_path.exists():
-                                current_only = read_csv_positions(str(current_csv_path))
-                                current_icaos_for_map = set(p["icao"] for p in current_only)
-
-                        create_map(positions, output_path, title, refresh_interval=0, current_icaos=current_icaos_for_map)
-                        update_count += 1
-                        print(f"[{update_count}] Map updated: {len(positions)} positions, {len(set(p['icao'] for p in positions))} aircraft")
-                    else:
-                        print("No positions found, skipping update...")
-
-                    last_size = current_size
-                else:
-                    print(f"Waiting... (no changes detected)")
+                create_map(positions, output_path, title, refresh_interval=0, current_icaos=current_icaos_for_map)
+                print(f"Map updated: {len(positions)} positions, {len(set(p['icao'] for p in positions))} aircraft")
+            else:
+                print("No positions found, skipping update...")
 
             time.sleep(interval)
 
     except KeyboardInterrupt:
-        print(f"\n\nStopped. Total updates: {update_count}")
+        print(f"\n\nStopped.")
 
 
 def main():

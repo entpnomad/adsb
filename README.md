@@ -139,6 +139,24 @@ ADSB_DB_URL=... python adsb_cli.py db --simulate 300                       # dat
 ADSB_DB_URL=... python adsb_cli.py db --stream                             # en vivo desde dump1090
 ```
 
+### Imagen Docker para el emisor (amigo con antena)
+
+Construye y ejecuta el colector que envía a tu Postgres:
+```bash
+# Build una vez
+docker build -f Dockerfile.sender -t adsb-sender .
+
+# Linux: accede al dump1090 local vía host networking
+docker run --rm --network host -e ADSB_DB_URL="postgresql://user:pass@TU_IP:5432/adsb" adsb-sender
+
+# Windows/macOS (Docker Desktop): apunta al host desde el contenedor
+docker run --rm \
+  --add-host=host.docker.internal:host-gateway \
+  -e ADSB_HOST=host.docker.internal -e ADSB_PORT=30003 \
+  -e ADSB_DB_URL="postgresql://user:pass@TU_IP:5432/adsb" \
+  adsb-sender
+```
+
 ### Home Location Setup
 
 ```bash

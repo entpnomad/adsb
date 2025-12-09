@@ -8,6 +8,7 @@ The page is written to output/index.html and served by serve_map.py.
 from __future__ import annotations
 
 import os
+import csv
 from datetime import datetime
 from pathlib import Path
 from typing import List, Tuple
@@ -52,6 +53,60 @@ def build_file(label: str, path: Path) -> str:
     """
 
 
+def load_current_rows(path: Path, limit: int = 20) -> List[dict]:
+    if not path.exists():
+        return []
+    rows: List[dict] = []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                rows.append(row)
+                if len(rows) >= limit:
+                    break
+    except Exception:
+        return []
+    return rows
+
+
+def build_table(rows: List[dict]) -> str:
+    if not rows:
+        return '<div class="muted">Sin datos actuales.</div>'
+
+    headers = ["icao", "flight", "altitude_ft", "speed_kts", "heading_deg", "lat", "lon", "timestamp_utc"]
+    header_html = "".join(f"<th>{h}</th>" for h in headers)
+    body_html = ""
+    for row in rows:
+        body_html += "<tr>" + "".join(f"<td>{row.get(h, '')}</td>" for h in headers) + "</tr>"
+    return f"""
+    <div class="table-wrapper">
+      <table class="table">
+        <thead><tr>{header_html}</tr></thead>
+        <tbody>{body_html}</tbody>
+      </table>
+    </div>
+    """
+
+
+def db_stats() -> Tuple[str, str]:
+    db_url = os.getenv("ADSB_DB_URL")
+    if not db_url:
+        return ("demo (sin URL)", "#f59e0b")
+    try:
+        import psycopg2  # type: ignore
+
+        with psycopg2.connect(db_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM positions;")
+                count = cur.fetchone()[0]
+                cur.execute("SELECT MAX(ts) FROM positions;")
+                latest = cur.fetchone()[0]
+                latest_txt = latest.isoformat() if latest else "n/a"
+                return (f"configurado · {count} posiciones · última {latest_txt}", "#10b981")
+    except Exception:
+        return ("no accesible", "#ef4444")
+
+
 def main() -> None:
     OUTPUT_DIR.mkdir(exist_ok=True, parents=True)
     current_map = Path(DEFAULT_CURRENT_MAP_HTML)
@@ -80,14 +135,18 @@ def main() -> None:
     </section>
     """)
 
+    # Current traffic table
+    rows = load_current_rows(current_csv, limit=20)
+    sections.append(f"""
+    <section>
+      <h2>Tráfico actual (CSV)</h2>
+      <div class="muted">Muestra los primeros {min(20, len(rows)) if rows else 0} registros de {current_csv.name}.</div>
+      {build_table(rows)}
+    </section>
+    """)
+
     # DB status (optional for demo)
-    db_url = os.getenv("ADSB_DB_URL")
-    if db_url:
-        db_status = "configurado"
-        db_color = "#10b981"
-    else:
-        db_status = "demo (sin URL)"
-        db_color = "#f59e0b"
+    db_status, db_color = db_stats()
     sections.append(f"""
     <section>
       <h2>Base de datos</h2>
@@ -163,7 +222,62 @@ def main() -> None:
     .file-name {{ font-weight: 600; }}
     .file-meta {{ color: #9ca3af; font-size: 13px; }}
     .hint {{ color: #9ca3af; font-size: 13px; }}
+    .table-wrapper {{
+      overflow-x: auto;
+      background: rgba(255,255,255,0.02);
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 10px;
+      padding: 8px;
+    }}
+    .table {{
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }}
+    .table th {{
+      text-align: left;
+      padding: 6px 8px;
+      color: #9ca3af;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+    }}
+    .table td {{
+      padding: 6px 8px;
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+      color: #e5e7eb;
+      white-space: nowrap;
+    }}
   </style>
+  <script>
+    async function refreshTable() {{
+      try {{
+        const resp = await fetch('adsb_current.csv?_=' + Date.now());
+        if (!resp.ok) return;
+        const text = await resp.text();
+        const rows = text.trim().split('\\n').slice(1); // skip header
+        const tbody = document.getElementById('live-table-body');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+        const maxRows = 20;
+        for (let i = 0; i < Math.min(rows.length, maxRows); i++) {{
+          const cols = rows[i].split(',');
+          const tr = document.createElement('tr');
+          const headers = ["timestamp_utc","icao","flight","lat","lon","altitude_ft","speed_kts","heading_deg","squawk"];
+          headers.forEach((_, idx) => {{
+            const td = document.createElement('td');
+            td.textContent = cols[idx] || '';
+            tr.appendChild(td);
+          }});
+          tbody.appendChild(tr);
+        }}
+        const countEl = document.getElementById('live-count');
+        if (countEl) countEl.textContent = 'Mostrando ' + Math.min(rows.length, maxRows) + ' de ' + rows.length + ' registros';
+      }} catch (e) {{
+        console.log('Refresh failed', e);
+      }}
+    }}
+    setInterval(refreshTable, 5000);
+    window.addEventListener('load', refreshTable);
+  </script>
 </head>
 <body>
   <div class="container">

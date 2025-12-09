@@ -61,18 +61,58 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      dump1090_sim:
+        condition: service_started
     working_dir: /app
     volumes:
       - ./:/app
     environment:
       ADSB_DB_URL: postgresql://adsb:adsb@postgres:5432/adsb
-      ADSB_HOST: host.docker.internal
+      ADSB_HOST: dump1090_sim
       ADSB_PORT: 30003
     command: >
       bash -lc "
       pip install --no-cache-dir -r requirements.txt &&
       python adsb_cli.py db --stream &&
       tail -f /dev/null
+      "
+
+  dump1090_sim:
+    image: python:3.11-slim
+    container_name: dump1090_sim
+    working_dir: /app
+    volumes:
+      - ./:/app
+    ports:
+      - "30003:30003"
+    command: >
+      bash -lc "
+      pip install --no-cache-dir -r requirements.txt &&
+      python simulate_stream.py
+      "
+
+  adsb_map_live:
+    image: python:3.11-slim
+    container_name: adsb_map_live
+    depends_on:
+      dump1090_sim:
+        condition: service_started
+    working_dir: /app
+    volumes:
+      - ./:/app
+    ports:
+      - "8000:8000"
+    command: >
+      bash -lc "
+        set -e
+        python -m pip install --no-cache-dir -r requirements.txt
+        echo 'starting collector...'
+        (python adsb_cli.py csv --host dump1090_sim --port 30003) &
+        sleep 3
+        echo 'starting watch_map...'
+        (python watch_map.py --csv output/adsb_current.csv --output output/adsb_current_map.html --interval 2) &
+        python portal.py
+        exec python serve_map.py --host 0.0.0.0 --port 8000
       "
 
   adsb_map_demo:
@@ -98,3 +138,14 @@ services:
 volumes:
   adsb_pgdata:
     driver: local
+
+# Sender service for a remote antenna (builds from Dockerfile.sender)
+adsb_sender:
+  build:
+    context: .
+    dockerfile: Dockerfile.sender
+  environment:
+    ADSB_DB_URL: postgresql://adsb:adsb@79.112.93.58:5432/adsb
+    ADSB_HOST: 127.0.0.1
+    ADSB_PORT: 30003
+  network_mode: host
