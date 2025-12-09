@@ -668,7 +668,7 @@ def create_map(positions: List[Dict[str, Any]], output_path: str = "adsb_map.htm
     }}
 
     function getAltitudeColor(altitude_ft) {{
-        // Returns HEX color for SVG fill based on altitude
+        // Returns HEX color for SVG fill based on altitude using smooth gradient interpolation
         if (altitude_ft === null || altitude_ft === undefined) return '#808080';  // gray
 
         const colorStops = [
@@ -680,13 +680,43 @@ def create_map(positions: List[Dict[str, Any]], output_path: str = "adsb_map.htm
             [40000, '#9932CC']   // 40000ft - dark orchid/purple
         ];
 
+        // Helper to parse hex color to RGB
+        function hexToRgb(hex) {{
+            const result = /^#?([a-f\\d]{{2}})([a-f\\d]{{2}})([a-f\\d]{{2}})$/i.exec(hex);
+            return result ? {{
+                r: parseInt(result[1], 16),
+                g: parseInt(result[2], 16),
+                b: parseInt(result[3], 16)
+            }} : null;
+        }}
+
+        // Helper to convert RGB to hex
+        function rgbToHex(r, g, b) {{
+            return '#' + [r, g, b].map(x => {{
+                const hex = Math.round(x).toString(16);
+                return hex.length === 1 ? '0' + hex : hex;
+            }}).join('');
+        }}
+
+        // Helper to interpolate between two colors
+        function interpolateColor(color1, color2, ratio) {{
+            const rgb1 = hexToRgb(color1);
+            const rgb2 = hexToRgb(color2);
+            if (!rgb1 || !rgb2) return color1;
+
+            const r = rgb1.r + (rgb2.r - rgb1.r) * ratio;
+            const g = rgb1.g + (rgb2.g - rgb1.g) * ratio;
+            const b = rgb1.b + (rgb2.b - rgb1.b) * ratio;
+            return rgbToHex(r, g, b);
+        }}
+
         if (altitude_ft <= colorStops[0][0]) return colorStops[0][1];
         if (altitude_ft >= colorStops[colorStops.length - 1][0]) return colorStops[colorStops.length - 1][1];
 
         for (let i = 0; i < colorStops.length - 1; i++) {{
             if (altitude_ft >= colorStops[i][0] && altitude_ft <= colorStops[i + 1][0]) {{
                 const ratio = (altitude_ft - colorStops[i][0]) / (colorStops[i + 1][0] - colorStops[i][0]);
-                return ratio < 0.5 ? colorStops[i][1] : colorStops[i + 1][1];
+                return interpolateColor(colorStops[i][1], colorStops[i + 1][1], ratio);
             }}
         }}
         return '#808080';
