@@ -81,6 +81,26 @@ def cmd_api(_args: argparse.Namespace) -> None:
     sys.exit(1)
 
 
+def cmd_db(args: argparse.Namespace) -> None:
+    """Run DB ingestor (stream, CSV, or simulated)."""
+    db_args = []
+    if args.db_url:
+        db_args += ["--db-url", args.db_url]
+    if args.batch_size:
+        db_args += ["--batch-size", str(args.batch_size)]
+    if args.stream:
+        db_args.append("--stream")
+    if args.from_csv:
+        db_args += ["--from-csv", args.from_csv]
+    if args.simulate is not None:
+        db_args += ["--simulate", str(args.simulate)]
+
+    import adsb_to_db  # noqa: WPS433
+
+    sys.argv = ["adsb_to_db.py"] + db_args
+    adsb_to_db.main()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="ADS-B helper CLI (CSV, plot, watch)",
@@ -111,6 +131,12 @@ def build_parser() -> argparse.ArgumentParser:
     watch_p.set_defaults(func=cmd_watch)
 
     db_p = sub.add_parser("db", help="(Placeholder) DB collector")
+    db_p.add_argument("--db-url", help="PostgreSQL URL (fallback env ADSB_DB_URL)")
+    db_p.add_argument("--batch-size", type=int, default=200, help="Batch insert size")
+    db_mode = db_p.add_mutually_exclusive_group(required=True)
+    db_mode.add_argument("--stream", action="store_true", help="Stream from dump1090")
+    db_mode.add_argument("--from-csv", help="Ingest an existing CSV file")
+    db_mode.add_argument("--simulate", type=int, nargs="?", const=200, help="Generate synthetic positions (default 200)")
     db_p.set_defaults(func=cmd_db)
 
     api_p = sub.add_parser("api", help="(Placeholder) HTTP API server")

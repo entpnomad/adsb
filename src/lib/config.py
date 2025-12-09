@@ -28,6 +28,7 @@ DEFAULT_MAP_HTML = OUTPUT_DIR / "adsb_map.html"
 DEFAULT_CURRENT_MAP_HTML = OUTPUT_DIR / "adsb_current_map.html"
 HOME_CONFIG_FILE = CONFIG_DIR / "home_location.json"
 AIRCRAFT_DB_FILE = DATA_DIR / "aircraft_db.csv"
+DEFAULT_DB_URL = None  # Explicitly require env for DB
 
 # Environment variable overrides
 def get_history_csv_path() -> Path:
@@ -49,6 +50,13 @@ def get_dump1090_host() -> str:
 def get_dump1090_port() -> int:
     """Get dump1090 port from env or default."""
     return int(os.getenv("ADSB_PORT", str(DEFAULT_PORT)))
+
+def get_db_url() -> str:
+    """Get database URL from env or raise if missing."""
+    db_url = os.getenv("ADSB_DB_URL", DEFAULT_DB_URL)
+    if not db_url:
+        raise RuntimeError("ADSB_DB_URL is not set")
+    return db_url
 
 # Timing defaults
 RECONNECT_DELAY = 5  # seconds

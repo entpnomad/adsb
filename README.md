@@ -117,6 +117,21 @@ python adsb_cli.py plot --csv output/adsb_current.csv --output output/adsb_curre
 python adsb_cli.py watch --csv output/adsb_current.csv --output output/adsb_current_map.html --interval 2
 ```
 
+### PostgreSQL (ingest y datos de demo)
+
+Configura `ADSB_DB_URL` (p. ej. `postgresql://user:pass@host:5432/adsb`) y usa el CLI:
+
+```bash
+# Volcar CSV histórico existente a Postgres
+ADSB_DB_URL=... python adsb_cli.py db --from-csv output/adsb_history.csv
+
+# Generar datos sintéticos si no tienes antena
+ADSB_DB_URL=... python adsb_cli.py db --simulate 300
+
+# Ingesta en vivo desde dump1090 hacia Postgres
+ADSB_DB_URL=... python adsb_cli.py db --stream
+```
+
 ### Home Location Setup
 
 ```bash

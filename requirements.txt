@@ -6,7 +6,7 @@
 folium>=0.14.0  # Interactive HTML maps
 
 # Step 2 (DB Logger): Will require:
-# psycopg2-binary>=2.9.0  # PostgreSQL adapter
+psycopg2-binary>=2.9.0  # PostgreSQL adapter
 #
 # Step 3 (HTTP API): Will require:
 # fastapi>=0.104.0
