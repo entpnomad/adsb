@@ -12,24 +12,28 @@ from __future__ import annotations
 import argparse
 import csv
 import math
+import os
 import random
 import socket
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-import os
 import psycopg2
 import psycopg2.extras
 
 from src.lib.adsb import AircraftStateTracker, ParsedMessage, parse_sbs_line
 from src.lib.config import (
+    CSV_COLUMNS,
     FLUSH_INTERVAL,
     RECONNECT_DELAY,
+    get_current_csv_path,
     get_db_url,
     get_dump1090_host,
     get_dump1090_port,
+    get_history_csv_path,
 )
 from src.lib.geo import get_home_location
 
@@ -314,6 +318,74 @@ def simulate_to_db(db_url: str, total_positions: int = 200, batch_size: int = 20
 
     flush_batches(conn, aircraft_rows, position_rows)
     print(f"Inserted {count} synthetic positions for {aircraft} aircraft centered at ({center_lat:.4f}, {center_lon:.4f})")
+
+
+def simulate_to_csv(
+    total_positions: int = 200,
+    history_path: Optional[Path] = None,
+    current_path: Optional[Path] = None,
+) -> None:
+    """
+    Generate synthetic positions into CSV files (history + current snapshot).
+    """
+    history_path = history_path or get_history_csv_path()
+    current_path = current_path or get_current_csv_path()
+    history_path.parent.mkdir(parents=True, exist_ok=True)
+    current_path.parent.mkdir(parents=True, exist_ok=True)
+
+    home = get_home_location()
+    center_lat = home["lat"]
+    center_lon = home["lon"]
+
+    aircraft = max(3, total_positions // 20)
+    points_per = max(5, total_positions // aircraft)
+
+    positions = list(generate_demo_positions(center_lat, center_lon, aircraft=aircraft, points_per_ac=points_per))
+
+    # Assign timestamps with small deltas so they sort nicely
+    now = datetime.now(timezone.utc)
+    for idx, pos in enumerate(positions):
+        pos["timestamp_utc"] = (now + timedelta(seconds=idx)).isoformat()
+
+    # Write history
+    with open(history_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(CSV_COLUMNS)
+        for pos in positions:
+            writer.writerow([
+                pos["timestamp_utc"],
+                pos["icao"],
+                pos["flight"],
+                pos["lat"],
+                pos["lon"],
+                pos.get("altitude_ft") or "",
+                pos.get("speed_kts") or "",
+                pos.get("heading_deg") or "",
+                pos.get("squawk") or "",
+            ])
+
+    # Current snapshot: take latest per ICAO
+    latest_by_icao: Dict[str, Dict[str, Any]] = {}
+    for pos in positions:
+        latest_by_icao[pos["icao"]] = pos
+
+    with open(current_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(CSV_COLUMNS)
+        for icao, pos in sorted(latest_by_icao.items()):
+            writer.writerow([
+                pos["timestamp_utc"],
+                pos["icao"],
+                pos["flight"],
+                pos["lat"],
+                pos["lon"],
+                pos.get("altitude_ft") or "",
+                pos.get("speed_kts") or "",
+                pos.get("heading_deg") or "",
+                pos.get("squawk") or "",
+            ])
+
+    print(f"Wrote synthetic CSV data: {len(positions)} records -> {history_path}, current snapshot -> {current_path}")
 
 
 def main():

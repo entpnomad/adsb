@@ -122,14 +122,21 @@ python adsb_cli.py watch --csv output/adsb_current.csv --output output/adsb_curr
 Configura `ADSB_DB_URL` (p. ej. `postgresql://user:pass@host:5432/adsb`) y usa el CLI:
 
 ```bash
-# Volcar CSV histórico existente a Postgres
-ADSB_DB_URL=... python adsb_cli.py db --from-csv output/adsb_history.csv
+# Docker-compose por modo (sin tocar entorno):
+# 1) Simulación de datos (default)
+docker compose up -d adsb_app postgres
+# 2) Ingerir un CSV histórico
+docker compose up -d adsb_app_from_csv postgres
+# 3) Stream en vivo desde dump1090
+docker compose up -d adsb_app_stream postgres
 
-# Generar datos sintéticos si no tienes antena
-ADSB_DB_URL=... python adsb_cli.py db --simulate 300
+# 4) Demo con mapa servido en http://localhost:8000/adsb_current_map.html
+docker compose up -d adsb_map_demo  # incluye portal en /index.html
 
-# Ingesta en vivo desde dump1090 hacia Postgres
-ADSB_DB_URL=... python adsb_cli.py db --stream
+# Sin Docker, comandos equivalentes:
+ADSB_DB_URL=... python adsb_cli.py db --from-csv output/adsb_history.csv   # volcar CSV
+ADSB_DB_URL=... python adsb_cli.py db --simulate 300                       # datos sintéticos
+ADSB_DB_URL=... python adsb_cli.py db --stream                             # en vivo desde dump1090
 ```
 
 ### Home Location Setup
