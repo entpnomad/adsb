@@ -135,17 +135,17 @@ services:
       python serve_map.py --host 0.0.0.0 --port 8000
       "
 
+# Sender service for a remote antenna (builds from Dockerfile.sender)
+  adsb_sender:
+    build:
+      context: .
+      dockerfile: Dockerfile.sender
+    environment:
+      ADSB_DB_URL: postgresql://adsb:adsb@79.112.93.58:5432/adsb
+      ADSB_HOST: 127.0.0.1
+      ADSB_PORT: 30003
+    network_mode: host
+
 volumes:
   adsb_pgdata:
     driver: local
-
-# Sender service for a remote antenna (builds from Dockerfile.sender)
-adsb_sender:
-  build:
-    context: .
-    dockerfile: Dockerfile.sender
-  environment:
-    ADSB_DB_URL: postgresql://adsb:adsb@79.112.93.58:5432/adsb
-    ADSB_HOST: 127.0.0.1
-    ADSB_PORT: 30003
-  network_mode: host
