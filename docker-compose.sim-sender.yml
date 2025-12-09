@@ -1,0 +1,22 @@
+version: "3.9"
+
+services:
+  adsb_sim_sender:
+    image: python:3.11-slim
+    working_dir: /app
+    volumes:
+      - ./:/app
+    env_file:
+      - .env.sim
+    environment:
+      ADSB_INGEST_URL: ${ADSB_INGEST_URL:-http://adsb_view_db:8000/api/ingest}
+      ADSB_SIM_CENTER_LAT: ${ADSB_SIM_CENTER_LAT:-40.4168}
+      ADSB_SIM_CENTER_LON: ${ADSB_SIM_CENTER_LON:-3.7038}
+      ADSB_SIM_AIRCRAFT: ${ADSB_SIM_AIRCRAFT:-5}
+      ADSB_SIM_POINTS: ${ADSB_SIM_POINTS:-10}
+      ADSB_SIM_INTERVAL: ${ADSB_SIM_INTERVAL:-5}
+    command: >
+      bash -lc "
+      pip install --no-cache-dir -r requirements.txt &&
+      python simulate_sender.py
+      "

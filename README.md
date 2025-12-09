@@ -168,6 +168,22 @@ ADSB_BATCH_SIZE=100
 ```
 The Desktop compose already maps `host.docker.internal` for you via `extra_hosts`.
 
+### Simulated antenna (sends to ingest)
+
+To simulate an antenna sending live data to the ingest API:
+
+```bash
+# With Docker (uses .env.sim for defaults)
+cp .env.sim.example .env.sim   # edit as needed
+docker compose --env-file .env.sim -f docker-compose.sim-sender.yml up -d adsb_sim_sender
+
+# Or run locally
+ADSB_INGEST_URL=http://localhost:8000/api/ingest \
+python simulate_sender.py --center-lat 40.4168 --center-lon -3.7038 --aircraft 5 --points-per-ac 10 --interval 5
+```
+
+Tune via env/flags: `ADSB_INGEST_URL`, `ADSB_SIM_CENTER_LAT`, `ADSB_SIM_CENTER_LON`, `ADSB_SIM_AIRCRAFT`, `ADSB_SIM_POINTS`, `ADSB_SIM_INTERVAL`.
+
 ### Home Location Setup
 
 ```bash

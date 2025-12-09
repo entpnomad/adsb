@@ -99,10 +99,15 @@
 
     async function svgIcon(iconName, color, heading) {
       const rot = heading != null ? heading : 0;
+      const safeColor = color || "#32CD32";
       let svg = await loadIcon(iconName);
       if (!svg) svg = await loadIcon("plane");
-      if (!svg) svg = `<svg width="28" height="28" viewBox="0 0 64 64" fill="${color}"><path d="M32 4 L40 32 L32 28 L24 32 Z"></path><rect x="28" y="32" width="8" height="20" rx="2" fill="${color}"></rect></svg>`;
-      svg = svg.replace(/fill="#[0-9a-fA-F]{6}"/g, `fill="${color}"`);
+      if (!svg) svg = `<svg width="28" height="28" viewBox="0 0 64 64" fill="${safeColor}"><path d="M32 4 L40 32 L32 28 L24 32 Z"></path><rect x="28" y="32" width="8" height="20" rx="2" fill="${safeColor}"></rect></svg>`;
+      svg = svg.replace(/fill="[^"]*"/g, `fill="${safeColor}"`);
+      svg = svg.replace(/stroke="[^"]*"/g, `stroke="${safeColor}"`);
+      if (!/fill=/.test(svg)) {
+        svg = svg.replace("<svg", `<svg fill="${safeColor}" stroke="${safeColor}"`);
+      }
       svg = svg.replace(/width="\d+"/g, 'width="28"').replace(/height="\d+"/g, 'height="28"');
       const html = `<div style="transform: rotate(${rot}deg); filter: drop-shadow(1px 1px 2px rgba(0,0,0,0.6));">${svg}</div>`;
       return L.divIcon({ html, className: 'aircraft', iconSize: [28, 28], iconAnchor: [14, 14] });
@@ -114,6 +119,10 @@
     }
 
     let windowSeconds = 300;
+    let hasFit = false;
+    let userMoved = false;
+    map.on("zoomstart", () => { userMoved = true; });
+    map.on("dragstart", () => { userMoved = true; });
     document.getElementById('apply').addEventListener('click', () => {
       const val = parseInt(document.getElementById('since').value, 10);
       if (!isNaN(val) && val > 0) windowSeconds = val;
@@ -153,8 +162,9 @@
             markers[key] = L.marker(latlng, { icon }).addTo(map).bindPopup(popup);
           }
         }
-        if (bounds.length) {
+        if (bounds.length && (!userMoved || !hasFit)) {
           map.fitBounds(bounds, { maxZoom: 9, animate: false });
+          hasFit = true;
         }
       } catch (e) {
         document.getElementById('status').textContent = 'API error';

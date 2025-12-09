@@ -191,16 +191,24 @@ def ingest(payload: IngestPayload):
     if not payload.positions:
         return {"ingested": 0}
 
-    rows = []
+    aircraft_rows = []
+    position_rows = []
     now = datetime.now(timezone.utc)
     for pos in payload.positions:
         if pos.lat is None or pos.lon is None:
             continue
         ts = pos.ts or now
-        rows.append(
+        aircraft_rows.append(
             (
                 pos.icao,
+                ts,
+                ts,
                 pos.flight,
+            )
+        )
+        position_rows.append(
+            (
+                pos.icao,
                 ts,
                 pos.lat,
                 pos.lon,
@@ -211,7 +219,7 @@ def ingest(payload: IngestPayload):
             )
         )
 
-    if not rows:
+    if not position_rows:
         return {"ingested": 0}
 
     try:
@@ -219,17 +227,27 @@ def ingest(payload: IngestPayload):
             with conn.cursor() as cur:
                 cur.executemany(
                     """
-                    INSERT INTO positions (icao, flight, ts, lat, lon, altitude_ft, speed_kts, heading_deg, squawk)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    INSERT INTO aircraft (icao, first_seen_utc, last_seen_utc, last_flight)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (icao) DO UPDATE
+                        SET last_seen_utc = EXCLUDED.last_seen_utc,
+                            last_flight   = COALESCE(EXCLUDED.last_flight, aircraft.last_flight)
                     """,
-                    rows,
+                    aircraft_rows,
+                )
+                cur.executemany(
+                    """
+                    INSERT INTO positions (icao, ts, lat, lon, altitude_ft, speed_kts, heading_deg, squawk)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    position_rows,
                 )
             conn.commit()
     except Exception as exc:
         logger.error("Ingest failed: %s", exc)
         raise HTTPException(status_code=500, detail="Ingest failed")
 
-    return {"ingested": len(rows)}
+    return {"ingested": len(position_rows)}
 
 
 @app.get("/map")
