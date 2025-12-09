@@ -188,10 +188,12 @@ def parse_sbs_line(line: str) -> Optional[Dict[str, Any]]:
 aircraft_state: Dict[str, Dict[str, Any]] = {}
 
 
-def update_aircraft_state(parsed: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def update_aircraft_state(parsed: Dict[str, Any]) -> tuple[Optional[Dict[str, Any]], bool]:
     """
     Update tracked aircraft state with new data.
-    Returns a complete position record if we have lat/lon, otherwise None.
+    Returns tuple of (position_record, is_complete).
+    - position_record: dict if we have lat/lon, None otherwise (for history CSV)
+    - is_complete: True if we have position AND velocity data (for current CSV)
     """
     icao = parsed["icao"]
 
@@ -231,7 +233,7 @@ def update_aircraft_state(parsed: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
     # Only return a record if we have a valid position
     if state["lat"] is not None and state["lon"] is not None:
-        return {
+        record = {
             "icao": state["icao"],
             "flight": state["flight"] or "",
             "lat": state["lat"],
@@ -241,8 +243,11 @@ def update_aircraft_state(parsed: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             "heading_deg": state["heading_deg"],
             "squawk": state["squawk"],
         }
+        # Consider complete if we have both position and velocity data
+        is_complete = (state["speed_kts"] is not None and state["heading_deg"] is not None)
+        return record, is_complete
 
-    return None
+    return None, False
 
 
 def write_position(csv_path, position: Dict[str, Any], timestamp_utc: Optional[str] = None) -> None:
@@ -312,10 +317,11 @@ def main():
                         parsed = parse_sbs_line(line)
                         if parsed:
                             # Update aircraft state with this message's data
-                            position = update_aircraft_state(parsed)
+                            position, is_complete = update_aircraft_state(parsed)
 
-                            # Only write if we have a valid position
-                            if position:
+                            # Only write complete records (with position + velocity)
+                            # to avoid incomplete data in both history and current CSVs
+                            if position and is_complete:
                                 timestamp_utc = datetime.now(timezone.utc).isoformat()
                                 position_with_ts = {**position, "timestamp_utc": timestamp_utc}
 
