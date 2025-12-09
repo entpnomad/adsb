@@ -5,6 +5,7 @@ Lightweight HTTP API backed by Postgres.
 Endpoints:
 - GET /api/aircraft/current?since_seconds=300
 - GET /api/aircraft/{icao}/history?hours=6
+- GET /api/aircraft/tracks?since_seconds=1800&max_points_per_aircraft=80&icaos=ABC,DEF
 - GET /api/health
 
 Static map (Leaflet) at /map reading /api/aircraft/current every 5s.
@@ -39,6 +40,8 @@ DB_URL = os.getenv("ADSB_DB_URL")
 if not DB_URL:
     raise RuntimeError("ADSB_DB_URL is not set")
 
+RETENTION_HOURS = int(os.getenv("ADSB_RETENTION_HOURS", "12"))
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("adsb_api")
 
@@ -57,6 +60,63 @@ if not ASSETS_DIR.exists():
     ASSETS_DIR = Path(__file__).parent / ".." / "assets"
 
 AIRCRAFT_DB_URL = "https://raw.githubusercontent.com/wiedehopf/tar1090-db/csv/aircraft_db.csv"
+
+DDL_STATEMENTS = [
+    """
+    CREATE TABLE IF NOT EXISTS aircraft (
+        icao TEXT PRIMARY KEY,
+        first_seen_utc TIMESTAMPTZ NOT NULL,
+        last_seen_utc  TIMESTAMPTZ NOT NULL,
+        last_flight    TEXT
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS positions (
+        id BIGSERIAL PRIMARY KEY,
+        icao TEXT NOT NULL REFERENCES aircraft(icao),
+        ts   TIMESTAMPTZ NOT NULL,
+        lat  DOUBLE PRECISION NOT NULL,
+        lon  DOUBLE PRECISION NOT NULL,
+        altitude_ft INTEGER,
+        speed_kts   REAL,
+        heading_deg REAL,
+        squawk      TEXT
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_positions_ts ON positions(ts);",
+    "CREATE INDEX IF NOT EXISTS idx_positions_icao_ts ON positions(icao, ts);",
+]
+
+
+def ensure_schema_exists() -> None:
+    """Create tables/indexes if they don't exist (useful for fresh DBs)."""
+    try:
+        with psycopg2.connect(DB_URL) as conn:
+            with conn.cursor() as cur:
+                for ddl in DDL_STATEMENTS:
+                    cur.execute(ddl)
+            conn.commit()
+        logger.info("Schema ensured (aircraft, positions).")
+    except Exception as exc:  # pragma: no cover - startup failure is fatal
+        logger.error("Schema init failed: %s", exc)
+        raise
+
+
+def prune_old_positions() -> None:
+    """Keep DB size reasonable by trimming old rows."""
+    if RETENTION_HOURS <= 0:
+        return
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=RETENTION_HOURS)
+    try:
+        with psycopg2.connect(DB_URL) as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM positions WHERE ts < %s", (cutoff,))
+                deleted = cur.rowcount
+            conn.commit()
+        if deleted:
+            logger.info("Pruned %s old position rows (older than %s hours)", deleted, RETENTION_HOURS)
+    except Exception as exc:  # pragma: no cover
+        logger.warning("Prune old positions failed: %s", exc)
 
 
 def fetch_all(query: str, params: tuple) -> list:
@@ -105,6 +165,9 @@ def ensure_aircraft_db() -> None:
 
 # Ensure DB file exists so icon/type enrichment works when available
 ensure_aircraft_db()
+# Ensure DB schema exists for fresh databases, and trim old rows to avoid huge history
+ensure_schema_exists()
+prune_old_positions()
 
 
 class PositionIn(BaseModel):
@@ -183,6 +246,92 @@ def history(icao: str, hours: Optional[int] = 6) -> dict:
     if not rows:
         raise HTTPException(status_code=404, detail="ICAO not found in window")
     return {"icao": icao.upper(), "count": len(rows), "positions": [enrich(r) for r in rows]}
+
+
+@app.get("/api/aircraft/tracks")
+def tracks(
+    since_seconds: int = 900,
+    max_points_per_aircraft: int = 80,
+    icaos: Optional[str] = None,
+) -> List[dict]:
+    """
+    Return recent trajectories for aircraft in the given window.
+
+    - since_seconds: time window to look back for positions
+    - max_points_per_aircraft: cap to avoid returning huge track histories
+    - icaos: optional comma-separated list to filter results
+    """
+    if max_points_per_aircraft <= 0:
+        raise HTTPException(status_code=400, detail="max_points_per_aircraft must be > 0")
+
+    since = datetime.now(timezone.utc) - timedelta(seconds=since_seconds)
+    icao_list: Optional[list[str]] = None
+    if icaos:
+        parsed = [x.strip().upper() for x in icaos.split(",") if x.strip()]
+        icao_list = parsed or None
+
+    filters = ["p.ts >= %s", "p.lat IS NOT NULL", "p.lon IS NOT NULL"]
+    params: list = [since]
+    if icao_list:
+        filters.append("p.icao = ANY(%s)")
+        params.append(icao_list)
+    filter_clause = " AND ".join(filters)
+    params.append(max_points_per_aircraft)
+
+    rows = fetch_all(
+        f"""
+        WITH ranked AS (
+            SELECT
+                p.icao,
+                a.last_flight AS flight,
+                p.ts,
+                p.lat,
+                p.lon,
+                p.altitude_ft,
+                p.speed_kts,
+                p.heading_deg,
+                p.squawk,
+                ROW_NUMBER() OVER (PARTITION BY p.icao ORDER BY p.ts DESC) AS rn
+            FROM positions p
+            LEFT JOIN aircraft a ON a.icao = p.icao
+            WHERE {filter_clause}
+        )
+        SELECT icao,
+               flight,
+               ts,
+               lat,
+               lon,
+               altitude_ft,
+               speed_kts,
+               heading_deg,
+               squawk
+        FROM ranked
+        WHERE rn <= %s
+        ORDER BY icao, ts ASC
+        """,
+        tuple(params),
+    )
+
+    tracks_by_icao: dict[str, dict] = {}
+    for row in rows:
+        icao = row["icao"]
+        if icao not in tracks_by_icao:
+            meta = enrich({"icao": icao, "flight": row.get("flight")})
+            meta["positions"] = []
+            tracks_by_icao[icao] = meta
+        tracks_by_icao[icao]["positions"].append(
+            {
+                "ts": row["ts"].isoformat() if isinstance(row["ts"], datetime) else row["ts"],
+                "lat": row["lat"],
+                "lon": row["lon"],
+                "altitude_ft": row["altitude_ft"],
+                "speed_kts": row["speed_kts"],
+                "heading_deg": row["heading_deg"],
+                "squawk": row["squawk"],
+            }
+        )
+
+    return list(tracks_by_icao.values())
 
 
 @app.post("/api/ingest")

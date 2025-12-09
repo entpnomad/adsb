@@ -60,6 +60,10 @@
     const map = L.map('map', { layers: [baseDark] }).setView([0,0], 2);
     L.control.layers({ "Dark": baseDark, "Light": baseLight, "Satellite": baseSatellite }).addTo(map);
     const markers = {};
+    const lineLayer = L.featureGroup().addTo(map);
+
+    const TRACK_WINDOW_SECONDS = 600; // minimum history window to draw tracks
+    const TRACK_POINTS_LIMIT = 60;
 
     const iconCache = new Map();
     async function loadIcon(name) {
@@ -121,6 +125,7 @@
     let windowSeconds = 300;
     let hasFit = false;
     let userMoved = false;
+    let isUpdating = false;
     map.on("zoomstart", () => { userMoved = true; });
     map.on("dragstart", () => { userMoved = true; });
     document.getElementById('apply').addEventListener('click', () => {
@@ -129,15 +134,50 @@
       update();
     });
 
+    async function drawTracks(activeIcaos) {
+      if (!activeIcaos || activeIcaos.size === 0) {
+        lineLayer.clearLayers();
+        return;
+      }
+      try {
+        const icaoParam = Array.from(activeIcaos).join(",");
+        const trackWindow = Math.max(windowSeconds, TRACK_WINDOW_SECONDS);
+        const resp = await fetch(`/api/aircraft/tracks?since_seconds=${trackWindow}&max_points_per_aircraft=${TRACK_POINTS_LIMIT}&icaos=${encodeURIComponent(icaoParam)}`);
+        if (!resp.ok) throw new Error(resp.statusText);
+        const tracks = await resp.json();
+        lineLayer.clearLayers();
+        for (const track of tracks) {
+          if (!track.positions || track.positions.length < 2) continue;
+          for (let i = 0; i < track.positions.length - 1; i++) {
+            const p1 = track.positions[i];
+            const p2 = track.positions[i + 1];
+            if (p1.lat == null || p1.lon == null || p2.lat == null || p2.lon == null) continue;
+            const color = altColor(p1.altitude_ft);
+            L.polyline([[p1.lat, p1.lon], [p2.lat, p2.lon]], {
+              color,
+              weight: 3,
+              opacity: 0.6
+            }).addTo(lineLayer);
+          }
+        }
+      } catch (err) {
+        console.error("Failed to fetch tracks", err);
+      }
+    }
+
     async function update() {
+      if (isUpdating) return;
+      isUpdating = true;
       try {
         const resp = await fetch(`/api/aircraft/current?since_seconds=${windowSeconds}`);
         if (!resp.ok) throw new Error(resp.statusText);
         const data = await resp.json();
         document.getElementById('status').textContent = `Aircraft: ${data.length} | ${new Date().toLocaleTimeString()}`;
         const bounds = [];
+        const activeIcaos = new Set();
         for (const ac of data) {
           if (ac.lat == null || ac.lon == null) continue;
+          activeIcaos.add(ac.icao);
           const key = ac.icao;
           const latlng = [ac.lat, ac.lon];
           bounds.push(latlng);
@@ -162,6 +202,9 @@
             markers[key] = L.marker(latlng, { icon }).addTo(map).bindPopup(popup);
           }
         }
+
+        await drawTracks(activeIcaos);
+
         if (bounds.length && (!userMoved || !hasFit)) {
           map.fitBounds(bounds, { maxZoom: 9, animate: false });
           hasFit = true;
@@ -169,6 +212,8 @@
       } catch (e) {
         document.getElementById('status').textContent = 'API error';
         console.error(e);
+      } finally {
+        isUpdating = false;
       }
     }
     update();
