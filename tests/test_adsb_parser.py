@@ -19,9 +19,13 @@ def test_parse_sbs_line_with_position():
     assert msg.lat == pytest.approx(45.63)
     assert msg.lon == pytest.approx(8.936)
     assert msg.altitude_ft == 38000
-    assert msg.speed_kts == 376
-    assert msg.heading_deg == 158
+    assert msg.ground_speed_kts == 376
+    assert msg.track_deg == 158
     assert msg.flight == "EWG4TV"
+    assert msg.message_type == "MSG"
+    assert msg.transmission_type == 3
+    assert msg.alert is False
+    assert msg.on_ground is False
 
 
 def test_parse_sbs_line_ignores_non_msg():
@@ -34,11 +38,14 @@ def test_tracker_merges_partial_messages():
 
     # Position without velocity
     msg_pos = ParsedMessage(
+        raw="MSG,3,,,",
+        message_type="MSG",
+        transmission_type=None,
         icao="ABC123",
+        callsign="TEST123",
         lat=40.0,
         lon=-3.0,
         altitude_ft=10000,
-        flight="TEST123",
         has_position=True,
     )
     pos_record, has_full = tracker.update(msg_pos)
@@ -48,9 +55,12 @@ def test_tracker_merges_partial_messages():
 
     # Velocity update (no lat/lon)
     msg_vel = ParsedMessage(
+        raw="MSG,4,,,",
+        message_type="MSG",
+        transmission_type=None,
         icao="ABC123",
-        speed_kts=250.0,
-        heading_deg=90.0,
+        ground_speed_kts=250.0,
+        track_deg=90.0,
     )
     pos_record, has_full = tracker.update(msg_vel)
     # Position still present and now has velocity merged

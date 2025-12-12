@@ -508,7 +508,7 @@ def recent_aircraft(limit: int = 15) -> List[dict]:
     )
 
     def to_json(row: dict) -> dict:
-        return {
+        base = {
             "icao": row["icao"],
             "flight": row.get("flight"),
             "first_seen_utc": row.get("first_seen_utc").isoformat() if isinstance(row.get("first_seen_utc"), datetime) else row.get("first_seen_utc"),
@@ -519,6 +519,8 @@ def recent_aircraft(limit: int = 15) -> List[dict]:
             "last_lon": row.get("lon"),
             "last_altitude_ft": row.get("altitude_ft"),
         }
+        # Enrich with registration/icon/model if available
+        return enrich(base)
 
     return [to_json(r) for r in rows]
 

@@ -6,7 +6,11 @@ services:
       context: ..
       dockerfile: Dockerfile.sender
     environment:
-      # Point to the central API ingest endpoint (override via env or .env file)
+      ADSB_SOURCE_ID: ${ADSB_SOURCE_ID:-ANTENNA_NODE}
+      ADSB_OUTPUT_MODE: ${ADSB_OUTPUT_MODE:-nats}
+      ADSB_NATS_URL: ${ADSB_NATS_URL:-nats://localhost:4222}
+      ADSB_NATS_SUBJECT: ${ADSB_NATS_SUBJECT:-adsb.position.v1}
+      # Legacy HTTP ingest (optional)
       ADSB_INGEST_URL: ${ADSB_INGEST_URL:-http://SERVER_IP:8000/api/ingest}
       # Local dump1090 feed on the antenna host
       ADSB_HOST: 127.0.0.1

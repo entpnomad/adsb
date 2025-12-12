@@ -191,6 +191,10 @@ def main() -> None:
       border: 1px solid rgba(255,255,255,0.2);
       color: #e5e7eb;
     }
+    .chip.disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
     .stat-card {
       background: rgba(255,255,255,0.04);
       border: 1px solid rgba(255,255,255,0.08);
@@ -330,12 +334,24 @@ def main() -> None:
         const icao = (row.icao || '').toUpperCase();
         const mapLink = `/map?route_icao=${encodeURIComponent(icao)}`;
         const adsbx = `https://globe.adsbexchange.com/?icao=${icao.toLowerCase()}`;
-        const fr24 = `https://www.flightradar24.com/data/aircraft/${icao.toLowerCase()}`;
-        return [
+        const registration = (row.registration || '').toLowerCase();
+        const flight = (row.flight || '').toLowerCase();
+        let fr24Link = '';
+        if (registration) {
+          fr24Link = `https://www.flightradar24.com/data/aircraft/${encodeURIComponent(registration)}`;
+        } else if (flight) {
+          fr24Link = `https://www.flightradar24.com/${encodeURIComponent(flight)}`;
+        }
+        const chips = [
           `<a class="chip" href="${mapLink}" target="_blank" rel="noreferrer noopener">Ver ruta</a>`,
           `<a class="chip secondary" href="${adsbx}" target="_blank" rel="noreferrer noopener">ADSBx</a>`,
-          `<a class="chip secondary" href="${fr24}" target="_blank" rel="noreferrer noopener">FR24</a>`
-        ].join(' ');
+        ];
+        if (fr24Link) {
+          chips.push(`<a class="chip secondary" href="${fr24Link}" target="_blank" rel="noreferrer noopener">FR24</a>`);
+        } else {
+          chips.push('<span class="chip secondary disabled">FR24 n/a</span>');
+        }
+        return chips.join(' ');
       };
       rows.forEach((row) => {
         const tr = document.createElement('tr');
