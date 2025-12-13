@@ -1,0 +1,17 @@
+services:
+  adsb_sender:
+    build:
+      context: ..
+      dockerfile: Dockerfile.sender
+    environment:
+      ADSB_SOURCE_ID: ${ADSB_SOURCE_ID:-ANTENNA_NODE}
+      ADSB_OUTPUT_MODE: ${ADSB_OUTPUT_MODE:-nats}
+      ADSB_NATS_URL: ${ADSB_NATS_URL:-nats://host.docker.internal:4222}
+      ADSB_NATS_SUBJECT: ${ADSB_NATS_SUBJECT:-adsb.position.v1}
+      ADSB_INGEST_URL: ${ADSB_INGEST_URL:-http://host.docker.internal:8000/api/ingest}
+      ADSB_HOST: ${ADSB_HOST:-host.docker.internal}
+      ADSB_PORT: ${ADSB_PORT:-30003}
+      ADSB_BATCH_SIZE: ${ADSB_BATCH_SIZE:-100}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped

@@ -29,6 +29,7 @@ data/
 
 # Environment
 .env
+.env.antenna
 .venv/
 env/
 venv/

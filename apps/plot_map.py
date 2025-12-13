@@ -6,10 +6,10 @@ Plots aircraft positions from CSV files onto an interactive map.
 Supports both current positions and historical trajectories.
 
 Usage:
-    python3 plot_map.py                    # Plot current positions
-    python3 plot_map.py --historical       # Plot all historical positions
-    python3 plot_map.py --icao 3C5EF2     # Plot trajectory for specific aircraft
-    python3 plot_map.py --home-address "Milan, Italy"  # Set home location
+    python -m apps.plot_map                    # Plot current positions
+    python -m apps.plot_map --historical       # Plot all historical positions
+    python -m apps.plot_map --icao 3C5EF2     # Plot trajectory for specific aircraft
+    python -m apps.plot_map --home-address "Milan, Italy"  # Set home location
 """
 
 import argparse
@@ -20,21 +20,26 @@ import sys
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 
+try:
+    from . import _bootstrap  # noqa: F401
+except ImportError:  # pragma: no cover
+    import _bootstrap  # type: ignore  # noqa: F401
+
 # Import shared modules
-from src.lib.config import (
+from adsb.config import (
     PROJECT_ROOT, OUTPUT_DIR, ICONS_DIR,
     get_history_csv_path, get_current_csv_path,
     DEFAULT_MAP_HTML, DEFAULT_CURRENT_MAP_HTML,
 )
-from src.lib.geo import (
+from adsb.geo import (
     get_home_location, set_home_from_address, setup_home_location,
     calculate_bearing, calculate_3d_distance,
 )
-from src.lib.colors import get_altitude_color, get_altitude_color_js
+from adsb.colors import get_altitude_color, get_altitude_color_js
 
 # Import aircraft database
 try:
-    from aircraft_db import get_aircraft_info, get_icon_for_type, AircraftDatabase
+    from apps.aircraft_db import get_aircraft_info, get_icon_for_type, AircraftDatabase
     AIRCRAFT_DB_AVAILABLE = True
 except ImportError:
     AIRCRAFT_DB_AVAILABLE = False
@@ -697,11 +702,11 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python3 plot_map.py                    # Current positions with trajectories
-  python3 plot_map.py --historical       # All historical positions
-  python3 plot_map.py --icao 3C5EF2      # Specific aircraft trajectory
-  python3 plot_map.py --no-history       # Current positions only
-  python3 plot_map.py --home-address "Milan, Italy"  # Set home location
+  python -m apps.plot_map                    # Current positions with trajectories
+  python -m apps.plot_map --historical       # All historical positions
+  python -m apps.plot_map --icao 3C5EF2      # Specific aircraft trajectory
+  python -m apps.plot_map --no-history       # Current positions only
+  python -m apps.plot_map --home-address "Milan, Italy"  # Set home location
         """
     )
 

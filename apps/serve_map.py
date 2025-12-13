@@ -6,7 +6,7 @@ Serves the map HTML and JSON data files via HTTP to avoid CORS issues.
 This allows the map to fetch updates dynamically without page reload.
 
 Usage:
-    python3 serve_map.py [--port 8000] [--host 127.0.0.1]
+    python -m apps.serve_map [--port 8000] [--host 127.0.0.1]
 """
 
 import argparse
@@ -14,7 +14,12 @@ import http.server
 import socketserver
 import sys
 
-from src.lib.config import OUTPUT_DIR
+try:
+    from . import _bootstrap  # noqa: F401
+except ImportError:  # pragma: no cover
+    import _bootstrap  # type: ignore  # noqa: F401
+
+from adsb.config import OUTPUT_DIR
 
 
 class CORSRequestHandler(http.server.SimpleHTTPRequestHandler):
@@ -45,9 +50,9 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python3 serve_map.py               # Serve on default port 8000
-  python3 serve_map.py --port 8080   # Serve on custom port
-  python3 serve_map.py --host 0.0.0.0  # Serve on all interfaces
+  python -m apps.serve_map               # Serve on default port 8000
+  python -m apps.serve_map --port 8080   # Serve on custom port
+  python -m apps.serve_map --host 0.0.0.0  # Serve on all interfaces
         """
     )
 
@@ -66,7 +71,7 @@ Examples:
     except OSError as e:
         if "Address already in use" in str(e):
             print(f"Error: Port {args.port} is already in use.", file=sys.stderr)
-            print(f"Try a different port: python3 serve_map.py --port {args.port + 1}", file=sys.stderr)
+            print(f"Try a different port: python -m apps.serve_map --port {args.port + 1}", file=sys.stderr)
         else:
             print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)

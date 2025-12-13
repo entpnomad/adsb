@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ADS-B Portal</title>
+  <style>
+    :root {
+      --bg: #0b1020;
+      --panel: rgba(255,255,255,0.04);
+      --muted: #9ca3af;
+    }
+    body { margin:0; padding:0; font-family: "Segoe UI", sans-serif; background:var(--bg); color:#e5e7eb; }
+    .container { max-width: 1080px; margin: 0 auto; padding: 32px 20px; }
+    h1 { margin: 0 0 6px 0; font-size: 28px; }
+    h2 { font-size: 18px; margin:0 0 8px 0; }
+    .muted { color: var(--muted); font-size: 14px; margin-bottom: 20px; }
+    .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+    .card { background: var(--panel); border:1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 16px; min-height: 150px; }
+    .btn { display:inline-block; margin-top:8px; padding:10px 14px; border-radius:10px; background:#2563eb; color:#fff; text-decoration:none; font-weight:600; }
+    .btn.secondary { background:#111827; border:1px solid rgba(255,255,255,0.1); color:#e5e7eb; }
+    code { background: rgba(255,255,255,0.06); padding: 2px 4px; border-radius: 6px; }
+    .hero { margin-bottom: 20px; padding: 18px; border:1px solid rgba(255,255,255,0.08); border-radius: 12px; background: var(--panel); }
+    .list { margin: 8px 0 0 0; padding-left: 16px; color: var(--muted); font-size: 14px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="hero">
+      <h1>ADS-B Portal</h1>
+      <div class="muted">
+        Stack to receive dump1090 traffic, store it in Postgres, and expose it through an API plus a live map.
+        Flow: dump1090 ? sender (adsb_sender) ? Postgres ? API ? browser map.
+      </div>
+    </div>
+    <div class="grid">
+      <div class="card">
+        <h2>Live map</h2>
+        <p>Direct visualization from the API (auto-refresh enabled).</p>
+        <a class="btn" href="/map">Open map</a>
+      </div>
+      <div class="card">
+        <h2>API</h2>
+        <p><code>/api/aircraft/current?since_seconds=300</code><br><code>/api/aircraft/&lt;icao&gt;/history?hours=6</code><br><code>/api/aircraft/&lt;icao&gt;/route</code></p>
+        <a class="btn secondary" href="/docs" target="_blank">OpenAPI / Docs</a>
+        <a class="btn secondary" style="margin-top:6px;" href="/api/health" target="_blank">Health</a>
+      </div>
+      <div class="card">
+        <h2>How it works</h2>
+        <p>Services in this compose stack:</p>
+        <ul class="list">
+          <li><strong>postgres</strong>: stores positions (table positions) and metadata (aircraft).</li>
+          <li><strong>adsb_sender</strong>: remote collector (reads dump1090 and writes to Postgres).</li>
+          <li><strong>adsb_view_db</strong>: API + map (reads from Postgres).</li>
+        </ul>
+        <p class="muted">Service and streamer status (best-effort):</p>
+        <ul class="list" id="status-list">
+          <li>API: checking...</li>
+          <li>DB: checking...</li>
+          <li>Connected streamers: n/a</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+  <script>
+    async function updateStatus() {
+      const list = document.getElementById('status-list');
+      if (!list) return;
+      try {
+        const health = await fetch('/api/health');
+        list.children[0].textContent = `API: ${health.ok ? 'OK' : 'Error ' + health.status}`;
+      } catch (e) {
+        list.children[0].textContent = 'API: Error';
+      }
+      try {
+        const db = await fetch('/api/aircraft/current?since_seconds=60');
+        list.children[1].textContent = `DB: ${db.ok ? 'OK' : 'Error ' + db.status}`;
+        if (db.ok) {
+          const data = await db.json();
+          const uniq = new Set(data.map(x => x.icao));
+          list.children[2].textContent = `Connected streamers (unique ICAO last 60s): ${uniq.size}`;
+        }
+      } catch (e) {
+        list.children[1].textContent = 'DB: Error';
+        list.children[2].textContent = 'Streamers: n/a';
+      }
+    }
+    updateStatus();
+    setInterval(updateStatus, 10000);
+  </script>
+</body>
+</html>

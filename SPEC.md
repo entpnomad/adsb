@@ -391,7 +391,167 @@ The Unreal Engine client (and other tools) will read from the DB via a small HTT
     * Call `/api/aircraft/{icao}/history` with desired time range.
     * Use the returned positions to create a spline/trajectory in 3D.
 
-## 7. Configuration & Environment
+## 7. Event Bus & JSON Envelope Specification
+
+### 7.1. AdsbPositionEvent structure
+
+Producers now emit one JSON event per position over NATS. The contract is explicitly versioned via `eventType` (`adsb.position.v1`) and timestamps use the local receive time in UTC milliseconds (`tsUnixMs = int(time.time() * 1000)`).
+
+Example payload:
+
+```json
+{
+  "eventType": "adsb.position.v1",
+  "source": "LISTENING_POST_LUGANO_01",
+  "tsUnixMs": 1733870000000,
+  "aircraft": {
+    "icaoHex": "4CA123",
+    "callsign": "RYR12AB",
+    "registration": "EI-ABC",
+    "icaoType": "B738",
+    "model": "BOEING 737-8AS",
+    "isMilitary": false,
+    "isInteresting": false,
+    "isPIA": false,
+    "isLADD": false
+  },
+  "position": {
+    "lat": 46.29419,
+    "lon": 8.87816,
+    "altitudeFt": 36000,
+    "groundSpeedKts": 420.3,
+    "trackDeg": 178.2,
+    "verticalRateFpm": -128
+  },
+  "codes": {
+    "squawk": "7700",
+    "alert": false,
+    "emergency": false,
+    "spi": false,
+    "onGround": false
+  },
+  "raw": {
+    "sbs": "MSG,3,111,11111,4CA123,111111,2025/12/12,15:46:01.200,2025/12/12,15:46:01.200,RYR12AB,36000,420,178,46.29419,8.87816,,,0,7700,0,0",
+    "messageType": "MSG",
+    "transmissionType": 3
+  }
+}
+```
+
+### 7.2. Field reference
+
+Top-level:
+
+| Field | Type | Unit | Origin |
+| --- | --- | --- | --- |
+| eventType | string | - | Constant `adsb.position.v1` |
+| source | string | - | Env `ADSB_SOURCE_ID` |
+| tsUnixMs | integer | ms since epoch (UTC) | Calculated on receive (`time.time()*1000`) |
+
+Aircraft:
+
+| Field | Type | Unit | Origin |
+| --- | --- | --- | --- |
+| icaoHex | string | hex | SBS field 4 |
+| callsign | string (optional) | - | SBS field 10 (trimmed) |
+| registration | string (optional) | - | `aircraft_db.csv` |
+| icaoType | string (optional) | - | `aircraft_db.csv` (type/code) |
+| model | string (optional) | - | `aircraft_db.csv` |
+| isMilitary | bool (optional) | - | `aircraft_db.csv` flags (bit 0) |
+| isInteresting | bool (optional) | - | `aircraft_db.csv` flags (bit 1) |
+| isPIA | bool (optional) | - | `aircraft_db.csv` flags (bit 2) |
+| isLADD | bool (optional) | - | `aircraft_db.csv` flags (bit 3) |
+
+Position:
+
+| Field | Type | Unit | Origin |
+| --- | --- | --- | --- |
+| lat | float | degrees | SBS field 14 |
+| lon | float | degrees | SBS field 15 |
+| altitudeFt | integer | feet | SBS field 11 |
+| groundSpeedKts | float | knots | SBS field 12 |
+| trackDeg | float | degrees | SBS field 13 |
+| verticalRateFpm | integer (optional) | feet/min | SBS field 16 |
+
+Codes:
+
+| Field | Type | Unit | Origin |
+| --- | --- | --- | --- |
+| squawk | string (optional) | code | SBS field 17 |
+| alert | bool (optional) | flag | SBS field 18 (0/1) |
+| emergency | bool (optional) | flag | SBS field 19 (0/1) |
+| spi | bool (optional) | flag | SBS field 20 (0/1) |
+| onGround | bool (optional) | flag | SBS field 21 (0/1) |
+
+Raw:
+
+| Field | Type | Unit | Origin |
+| --- | --- | --- | --- |
+| sbs | string | - | Original SBS-1 line (trimmed) |
+| messageType | string | - | SBS field 0 (e.g., `MSG`) |
+| transmissionType | integer (optional) | - | SBS field 1 (1–8) |
+
+### 7.3. SBS-1 mapping (BaseStation → JSON)
+
+| JSON path | SBS index | Notes |
+| --- | --- | --- |
+| aircraft.icaoHex | 4 | Required |
+| aircraft.callsign | 10 | Trim spaces |
+| position.altitudeFt | 11 | Feet |
+| position.groundSpeedKts | 12 | Knots |
+| position.trackDeg | 13 | Degrees |
+| position.lat | 14 | Decimal degrees |
+| position.lon | 15 | Decimal degrees |
+| position.verticalRateFpm | 16 | Feet/min |
+| codes.squawk | 17 | String |
+| codes.alert | 18 | `0/1` → `false/true` |
+| codes.emergency | 19 | `0/1` → `false/true` |
+| codes.spi | 20 | `0/1` → `false/true` |
+| codes.onGround | 21 | `0/1` → `false/true` |
+
+Aircraft metadata (registration, type/model, PIA/LADD/military/interesting) are enriched from `data/aircraft_db.csv` when available. Flag bits follow the Mictronics/tar1090 database ordering: bit 0 = military, bit 1 = interesting, bit 2 = PIA, bit 3 = LADD.
+
+Optional fields may be null or omitted; consumers should treat missing keys as "unknown" rather than false/zero.
+
+### 7.4. Consumption via NATS
+
+- Producer publishes `AdsbPositionEvent` to `ADSB_NATS_URL` (default `nats://localhost:4222`) on subject `ADSB_NATS_SUBJECT` (default `adsb.position.v1`).
+- Consumers only need the bus coordinates and this contract; they do not need internal repo details.
+- External services (e.g., airspace-core) simply subscribe to `ADSB_NATS_SUBJECT` and deserialize the JSON.
+
+Python (asyncio) subscriber sketch:
+
+```python
+import asyncio, json, os
+from nats.aio.client import Client as NATS
+
+async def main():
+    nc = NATS()
+    await nc.connect(servers=[os.getenv("ADSB_NATS_URL", "nats://localhost:4222")])
+
+    async def handler(msg):
+        event = json.loads(msg.data)
+        print(event["aircraft"]["icaoHex"], event["position"]["lat"], event["position"]["lon"])
+
+    await nc.subscribe(os.getenv("ADSB_NATS_SUBJECT", "adsb.position.v1"), cb=handler)
+    await asyncio.Future()
+
+asyncio.run(main())
+```
+
+Go (pseudocode) subscriber sketch:
+
+```go
+nc, _ := nats.Connect(os.Getenv("ADSB_NATS_URL"))
+nc.Subscribe(os.Getenv("ADSB_NATS_SUBJECT"), func(m *nats.Msg) {
+    var evt map[string]any
+    json.Unmarshal(m.Data, &evt)
+    // use evt["aircraft"].(map[string]any)["icaoHex"] ...
+})
+select {}
+```
+
+## 8. Configuration & Environment
 
 Use environment variables for runtime configuration:
 
@@ -403,6 +563,11 @@ Use environment variables for runtime configuration:
 * `ADSB_DB_URL` – PostgreSQL connection string.
 * `ADSB_API_HOST` – API bind host (default `0.0.0.0`).
 * `ADSB_API_PORT` – API port (default `8000`).
+* `ADSB_OUTPUT_MODE` – sender output (`nats` default, `http` legacy ingest).
+* `ADSB_NATS_URL` – NATS server URL (default `nats://localhost:4222`).
+* `ADSB_NATS_SUBJECT` – NATS subject for events (default `adsb.position.v1`).
+* `ADSB_SOURCE_ID` – identifier for the producing station (included in events).
+* `ADSB_BATCH_SIZE` – HTTP batch size (legacy sender/simulator mode).
 
 This keeps the code identical across macOS, Linux, and Raspberry Pi—only the environment changes.
 
@@ -423,7 +588,7 @@ All operations are started via the unified shell script:
 
 The shell script handles dump1090 startup automatically, so no manual intervention is needed.
 
-## 8. Tasks for Implementation
+## 9. Tasks for Implementation
 
 ### Task A – Implement Unified Shell Script and CSV Logger
 
@@ -465,7 +630,7 @@ The shell script handles dump1090 startup automatically, so no manual interventi
   * `/api/aircraft/{icao}/history` for trajectories.
 * Coordinate mapping (lat/lon → world coordinates) is handled inside Unreal based on the LiDAR data.
 
-## 9. Future Extensions (Optional)
+## 10. Future Extensions (Optional)
 
 * Switch or augment storage with **TimescaleDB** for better time-series performance.
 * Add **WebSockets** for push-based updates to clients instead of polling.

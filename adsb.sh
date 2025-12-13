@@ -91,12 +91,12 @@ log "dump1090 ready on port 30003"
 # Start CSV logger
 log "Starting data collector..."
 cd "$SCRIPT_DIR"
-python3 adsb_to_csv.py > /dev/null 2>&1 &
+python3 -m apps.adsb_to_csv > /dev/null 2>&1 &
 sleep 2
 
 # Start HTTP server
 log "Starting HTTP server on port $HTTP_PORT..."
-python3 serve_map.py --port "$HTTP_PORT" > /dev/null 2>&1 &
+python3 -m apps.serve_map --port "$HTTP_PORT" > /dev/null 2>&1 &
 sleep 2
 
 # Verify HTTP server started
@@ -109,7 +109,7 @@ fi
 log "Starting map updater..."
 (
     while true; do
-        python3 plot_map.py --csv output/adsb_current.csv --output output/adsb_current_map.html 2>/dev/null
+        python3 -m apps.plot_map --csv output/adsb_current.csv --output output/adsb_current_map.html 2>/dev/null
         sleep 1
     done
 ) &

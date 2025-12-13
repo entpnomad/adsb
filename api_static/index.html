@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADS-B Live Map (API)</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+    :root {
+      --bg: #0b1020;
+      --panel: rgba(0,0,0,0.6);
+      --muted: #9ca3af;
+    }
+    body { margin:0; padding:0; font-family: "Segoe UI", sans-serif; background:var(--bg); color:#e5e7eb; }
+    #map { width: 100vw; height: 100vh; }
+    .leaflet-control-container .leaflet-top.leaflet-left { margin-top: 50px; }
+    .banner { position: fixed; top: 10px; left: 10px; z-index: 1000; background: var(--panel); padding: 10px 12px; border-radius: 10px; border:1px solid rgba(255,255,255,0.15); backdrop-filter: blur(12px); box-shadow:0 10px 30px rgba(0,0,0,0.5); }
+    .banner h1 { margin: 0; font-size: 16px; }
+    .banner .meta { font-size: 12px; color:var(--muted); }
+    .legend { margin-top:6px; font-size:11px; color:var(--muted); }
+    .legend span { display:inline-block; width:12px; height:12px; border-radius:2px; margin-right:4px; }
+    .popup { font-size: 13px; }
+    .popup .label { color: var(--muted); }
+    .popup .links { margin-top: 10px; display: flex; gap: 12px; justify-content: center; }
+    .popup .links a { color: #6cb8ff; text-decoration: none; font-weight: 600; }
+    .popup .links a:hover { text-decoration: underline; }
+    .control { position:fixed; top:10px; right:10px; z-index:1000; background: rgba(0,0,0,0.55); padding:10px 12px; border:1px solid rgba(255,255,255,0.1); border-radius:10px; backdrop-filter: blur(10px); width: 320px; }
+    .control-row { display:flex; align-items:center; gap:6px; margin-bottom:6px; flex-wrap: wrap; }
+    .control label { font-size: 12px; color: var(--muted); }
+    .control input { background: rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.15); border-radius:8px; padding:6px 8px; color:#e5e7eb; }
+    .control button { background:#2563eb; color:#fff; border:none; border-radius:8px; padding:7px 10px; cursor:pointer; font-weight:600; }
+    .control button.secondary { background:#111827; border:1px solid rgba(255,255,255,0.15); }
+    .control-hint { font-size:11px; color:var(--muted); margin-top:4px; line-height: 1.2; }
+  </style>
+</head>
+<body>
+  <div class="banner">
+    <h1>ADS-B Live (API)</h1>
+    <div class="meta" id="status">Loading...</div>
+    <div class="legend">
+      <span style="background:#FF8C00"></span>0ft
+      <span style="background:#FFD700"></span>4k
+      <span style="background:#32CD32"></span>8k
+      <span style="background:#00CED1"></span>20k
+      <span style="background:#1E90FF"></span>30k
+      <span style="background:#9932CC"></span>40k+
+    </div>
+  </div>
+  <div id="map"></div>
+  <div class="control">
+    <div class="control-row">
+      <label for="since">Window (sec):</label>
+      <input id="since" type="number" value="300" min="30" step="30" style="width:90px;" />
+      <button id="apply">Apply</button>
+    </div>
+    <div class="control-row">
+      <label for="route-icao">Full route ICAO:</label>
+      <input id="route-icao" type="text" placeholder="ABC123" maxlength="6" style="width:90px; text-transform:uppercase;" />
+      <button id="load-route">Show</button>
+      <button id="clear-route" class="secondary">Clear</button>
+    </div>
+    <div id="route-meta" class="control-hint">Load all stored points for an aircraft.</div>
+  </div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    const baseDark = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap & CartoDB'
+    });
+    const baseLight = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap'
+    });
+    const baseSatellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 19,
+      attribution: 'Tiles &copy; Esri'
+    });
+    const map = L.map('map', { layers: [baseDark] }).setView([0,0], 2);
+    L.control.layers({ "Dark": baseDark, "Light": baseLight, "Satellite": baseSatellite }).addTo(map);
+    const markers = {};
+    const lineLayer = L.featureGroup().addTo(map);
+    const fullRouteLayer = L.featureGroup().addTo(map);
+    const urlParams = new URLSearchParams(window.location.search);
+    const initialRouteIcao = (urlParams.get("route_icao") || urlParams.get("route") || "").toUpperCase();
+
+    const TRACK_WINDOW_SECONDS = 600; // minimum history window to draw tracks
+    const TRACK_POINTS_LIMIT = 60;
+
+    const iconCache = new Map();
+    async function loadIcon(name) {
+      if (iconCache.has(name)) return iconCache.get(name);
+      try {
+        const r = await fetch(`/assets/icons/${name}.svg`);
+        if (!r.ok) throw new Error("not found");
+        const txt = await r.text();
+        iconCache.set(name, txt);
+        return txt;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    const colorStops = [
+      [0, "#FF8C00"],
+      [4000, "#FFD700"],
+      [8000, "#32CD32"],
+      [20000, "#00CED1"],
+      [30000, "#1E90FF"],
+      [40000, "#9932CC"],
+    ];
+    function hexToRgb(hex) {
+      const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+      return result ? {
+        r: parseInt(result[1], 16),
+        g: parseInt(result[2], 16),
+        b: parseInt(result[3], 16)
+      } : null;
+    }
+    function rgbToHex(r, g, b) {
+      return '#' + [r, g, b].map(x => {
+        const hex = Math.round(x).toString(16);
+        return hex.length === 1 ? '0' + hex : hex;
+      }).join('');
+    }
+    function interpolateColor(color1, color2, ratio) {
+      const rgb1 = hexToRgb(color1);
+      const rgb2 = hexToRgb(color2);
+      if (!rgb1 || !rgb2) return color1;
+      const r = rgb1.r + (rgb2.r - rgb1.r) * ratio;
+      const g = rgb1.g + (rgb2.g - rgb1.g) * ratio;
+      const b = rgb1.b + (rgb2.b - rgb1.b) * ratio;
+      return rgbToHex(r, g, b);
+    }
+    function altColor(ft) {
+      if (ft == null) return "#808080";
+      if (ft <= colorStops[0][0]) return colorStops[0][1];
+      if (ft >= colorStops[colorStops.length - 1][0]) return colorStops[colorStops.length - 1][1];
+      for (let i = 0; i < colorStops.length - 1; i++) {
+        const [a1, c1] = colorStops[i];
+        const [a2, c2] = colorStops[i + 1];
+        if (ft >= a1 && ft <= a2) {
+          const ratio = (ft - a1) / (a2 - a1);
+          return interpolateColor(c1, c2, ratio);
+        }
+      }
+      return "#808080";
+    }
+
+    async function svgIcon(iconName, color, heading) {
+      const rot = heading != null ? heading : 0;
+      const safeColor = color || "#32CD32";
+      let svg = await loadIcon(iconName);
+      if (!svg) svg = await loadIcon("plane");
+      if (!svg) svg = `<svg width="28" height="28" viewBox="0 0 64 64" fill="${safeColor}"><path d="M32 4 L40 32 L32 28 L24 32 Z"></path><rect x="28" y="32" width="8" height="20" rx="2" fill="${safeColor}"></rect></svg>`;
+      svg = svg.replace(/fill="[^"]*"/g, `fill="${safeColor}"`);
+      svg = svg.replace(/stroke="[^"]*"/g, `stroke="${safeColor}"`);
+      if (!/fill=/.test(svg)) {
+        svg = svg.replace("<svg", `<svg fill="${safeColor}" stroke="${safeColor}"`);
+      }
+      svg = svg.replace(/width="\d+"/g, 'width="28"').replace(/height="\d+"/g, 'height="28"');
+      const html = `<div style="transform: rotate(${rot}deg); filter: drop-shadow(1px 1px 2px rgba(0,0,0,0.6));">${svg}</div>`;
+      return L.divIcon({ html, className: 'aircraft', iconSize: [28, 28], iconAnchor: [14, 14] });
+    }
+
+    function fmt(num, unit) {
+      if (num == null) return "";
+      return `${Math.round(num)} ${unit}`;
+    }
+
+    function fmtRelative(ts) {
+      if (!ts) return "";
+      const d = new Date(ts);
+      if (Number.isNaN(d.getTime())) return "";
+      const diffSeconds = Math.max(0, (Date.now() - d.getTime()) / 1000);
+      if (diffSeconds < 5) return "Now";
+      if (diffSeconds < 60) return `${Math.round(diffSeconds)} seconds ago`;
+      const diffMinutes = diffSeconds / 60;
+      if (diffMinutes < 60) return `${Math.round(diffMinutes)} minutes ago`;
+      const diffHours = diffMinutes / 60;
+      if (diffHours < 48) return `${Math.round(diffHours)} hours ago`;
+      const diffDays = diffHours / 24;
+      return `${Math.round(diffDays)} days ago`;
+    }
+
+    function fmtTime(ts) {
+      if (!ts) return "";
+      const d = new Date(ts);
+      if (Number.isNaN(d.getTime())) return ts;
+      return d.toLocaleString();
+    }
+
+    let windowSeconds = 300;
+    let hasFit = false;
+    let userMoved = false;
+    let isUpdating = false;
+    map.on("zoomstart", () => { userMoved = true; });
+    map.on("dragstart", () => { userMoved = true; });
+    document.getElementById('apply').addEventListener('click', () => {
+      const val = parseInt(document.getElementById('since').value, 10);
+      if (!isNaN(val) && val > 0) windowSeconds = val;
+      update();
+    });
+    document.getElementById('load-route').addEventListener('click', loadFullRoute);
+    document.getElementById('clear-route').addEventListener('click', clearFullRoute);
+    document.getElementById('route-icao').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') loadFullRoute();
+    });
+    if (initialRouteIcao) {
+      const input = document.getElementById('route-icao');
+      if (input) {
+        input.value = initialRouteIcao;
+        loadFullRoute();
+      }
+    }
+
+    async function drawTracks(activeIcaos) {
+      if (!activeIcaos || activeIcaos.size === 0) {
+        lineLayer.clearLayers();
+        return;
+      }
+      try {
+        const icaoParam = Array.from(activeIcaos).join(",");
+        const trackWindow = Math.max(windowSeconds, TRACK_WINDOW_SECONDS);
+        const resp = await fetch(`/api/aircraft/tracks?since_seconds=${trackWindow}&max_points_per_aircraft=${TRACK_POINTS_LIMIT}&icaos=${encodeURIComponent(icaoParam)}`);
+        if (!resp.ok) throw new Error(resp.statusText);
+        const tracks = await resp.json();
+        lineLayer.clearLayers();
+        for (const track of tracks) {
+          if (!track.positions || track.positions.length < 2) continue;
+          for (let i = 0; i < track.positions.length - 1; i++) {
+            const p1 = track.positions[i];
+            const p2 = track.positions[i + 1];
+            if (p1.lat == null || p1.lon == null || p2.lat == null || p2.lon == null) continue;
+            const color = altColor(p1.altitude_ft);
+            L.polyline([[p1.lat, p1.lon], [p2.lat, p2.lon]], {
+              color,
+              weight: 3,
+              opacity: 0.6
+            }).addTo(lineLayer);
+          }
+        }
+      } catch (err) {
+        console.error("Failed to fetch tracks", err);
+      }
+    }
+
+    function renderFullRoute(route) {
+      fullRouteLayer.clearLayers();
+      if (!route || !route.positions || route.positions.length === 0) return;
+      const coords = route.positions.filter((p) => p.lat != null && p.lon != null);
+      if (!coords.length) return;
+      for (let i = 0; i < coords.length - 1; i++) {
+        const p1 = coords[i];
+        const p2 = coords[i + 1];
+        const color = altColor(p1.altitude_ft);
+        L.polyline([[p1.lat, p1.lon], [p2.lat, p2.lon]], {
+          color,
+          weight: 4,
+          opacity: 0.8
+        }).addTo(fullRouteLayer);
+      }
+      const start = coords[0];
+      const end = coords[coords.length - 1];
+      L.circleMarker([start.lat, start.lon], {
+        radius: 5,
+        color: "#10b981",
+        fillColor: "#10b981",
+        fillOpacity: 0.9,
+        weight: 2
+      }).bindTooltip(`Start ${fmtTime(start.ts)}`, { direction: "top" }).addTo(fullRouteLayer);
+      L.circleMarker([end.lat, end.lon], {
+        radius: 5,
+        color: "#ef4444",
+        fillColor: "#ef4444",
+        fillOpacity: 0.9,
+        weight: 2
+      }).bindTooltip(`End ${fmtTime(end.ts)}`, { direction: "top" }).addTo(fullRouteLayer);
+      const bounds = fullRouteLayer.getBounds();
+      if (bounds.isValid()) {
+        map.fitBounds(bounds, { padding: [24, 24], maxZoom: 9, animate: false });
+        hasFit = true;
+        userMoved = true;
+      }
+    }
+
+    async function loadFullRoute() {
+      const statusEl = document.getElementById('route-meta');
+      const input = document.getElementById('route-icao');
+      if (!statusEl || !input) return;
+      const icao = (input.value || "").trim().toUpperCase();
+      input.value = icao;
+      if (!icao) {
+        statusEl.textContent = 'Enter an ICAO hex to load the full route.';
+        fullRouteLayer.clearLayers();
+        return;
+      }
+      statusEl.textContent = `Loading full route for ${icao}...`;
+      try {
+        const resp = await fetch(`/api/aircraft/${encodeURIComponent(icao)}/route`);
+        if (!resp.ok) throw new Error(resp.statusText);
+        const data = await resp.json();
+        renderFullRoute(data);
+        const windowText = data.start_ts && data.end_ts ? `${fmtTime(data.start_ts)} -> ${fmtTime(data.end_ts)}` : 'n/a';
+        statusEl.textContent = `Route ${data.icao}: ${data.count} points (${windowText})`;
+      } catch (err) {
+        fullRouteLayer.clearLayers();
+        statusEl.textContent = `Unable to load route: ${err.message || err}`;
+      }
+    }
+
+    function clearFullRoute() {
+      fullRouteLayer.clearLayers();
+      const statusEl = document.getElementById('route-meta');
+      if (statusEl) statusEl.textContent = 'Full route cleared.';
+    }
+
+    async function update() {
+      if (isUpdating) return;
+      isUpdating = true;
+      try {
+        const resp = await fetch(`/api/aircraft/current?since_seconds=${windowSeconds}`);
+        if (!resp.ok) throw new Error(resp.statusText);
+        const data = await resp.json();
+        document.getElementById('status').textContent = `Aircraft: ${data.length} | ${new Date().toLocaleTimeString()}`;
+        const bounds = [];
+        const activeIcaos = new Set();
+        for (const ac of data) {
+          if (ac.lat == null || ac.lon == null) continue;
+          activeIcaos.add(ac.icao);
+          const key = ac.icao;
+          const latlng = [ac.lat, ac.lon];
+          bounds.push(latlng);
+          const color = altColor(ac.altitude_ft);
+          const iconName = ac.icon || "plane";
+          const icon = await svgIcon(iconName, color, ac.heading_deg);
+          const adsbxLink = `https://globe.adsbexchange.com/?icao=${(ac.icao || "").toLowerCase()}`;
+          const fr24Link = ac.registration ? `https://www.flightradar24.com/data/aircraft/${ac.registration.toLowerCase()}` : null;
+          const spotted = fmtRelative(ac.ts) || fmtTime(ac.ts) || "";
+          const linksHtml = `
+              <div class="links">
+                <a href="${adsbxLink}" target="_blank" rel="noreferrer noopener">ADSBexchange</a>
+                ${fr24Link ? `<a href="${fr24Link}" target="_blank" rel="noreferrer noopener">FlightRadar24</a>` : ""}
+              </div>`;
+          const popup = `
+            <div class="popup">
+              <div><strong>${ac.icao}</strong> ${ac.flight || ""}</div>
+              ${ac.registration ? `<div class="label">Registration</div>${ac.registration}` : ""}
+              ${ac.type ? `<div class="label">Type</div>${ac.type}` : ""}
+              ${ac.model ? `<div class="label">Model</div>${ac.model}` : ""}
+              <div class="label">Altitude</div>${fmt(ac.altitude_ft,"ft")}
+              <div class="label">Speed</div>${fmt(ac.speed_kts,"kts")}
+              <div class="label">Heading</div>${fmt(ac.heading_deg,"deg")}
+              <div class="label">Squawk</div>${ac.squawk || ""}
+              <div class="label">Spotted</div>${spotted}
+              ${linksHtml}
+            </div>`;
+          if (markers[key]) {
+            markers[key].setLatLng(latlng).setIcon(icon).setPopupContent(popup);
+          } else {
+            markers[key] = L.marker(latlng, { icon }).addTo(map).bindPopup(popup);
+          }
+        }
+
+        await drawTracks(activeIcaos);
+
+        if (bounds.length && (!userMoved || !hasFit)) {
+          map.fitBounds(bounds, { maxZoom: 9, animate: false });
+          hasFit = true;
+        }
+      } catch (e) {
+        document.getElementById('status').textContent = 'API error';
+        console.error(e);
+      } finally {
+        isUpdating = false;
+      }
+    }
+    update();
+    setInterval(update, 5000);
+  </script>
+</body>
+</html>

@@ -1,0 +1,45 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:15
+    container_name: adsb_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: adsb
+      POSTGRES_PASSWORD: adsb
+      POSTGRES_DB: adsb
+    ports:
+      - "5432:5432"
+    volumes:
+      - adsb_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U adsb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+# Live viewer/API backed by Postgres
+  adsb_view_db:
+    image: python:3.11-slim
+    container_name: adsb_view_db
+    working_dir: /app
+    volumes:
+      - ../:/app
+    ports:
+      - "8000:8000"
+    environment:
+      ADSB_DB_URL: postgresql://adsb:adsb@host.docker.internal:5432/adsb
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >
+      bash -lc "
+        set -e
+        python -m pip install --no-cache-dir -r requirements.txt
+        exec uvicorn apps.api_main:app --host 0.0.0.0 --port 8000
+      "
+
+volumes:
+  adsb_pgdata:
+    driver: local

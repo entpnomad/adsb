@@ -6,13 +6,17 @@
 folium>=0.14.0  # Interactive HTML maps
 
 # Step 2 (DB Logger): Will require:
-# psycopg2-binary>=2.9.0  # PostgreSQL adapter
+psycopg2-binary>=2.9.0  # PostgreSQL adapter
 #
 # Step 3 (HTTP API): Will require:
-# fastapi>=0.104.0
-# uvicorn[standard]>=0.24.0
-# psycopg2-binary>=2.9.0  # For database queries
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+psycopg2-binary>=2.9.0  # For database queries
+requests>=2.31.0       # API client / sender
+nats-py>=2.6.0         # Event bus (NATS) publisher
 
 # For now, Step 1 works with standard library only
 # Install folium for map plotting: pip install folium
 
+# Dev / Tests
+pytest>=7.4.0

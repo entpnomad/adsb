@@ -10,14 +10,20 @@ Usage:
     from aircraft_db import get_aircraft_info, get_aircraft_icon
 
     # As a CLI tool
-    python3 aircraft_db.py 4B4437
+    python -m apps.aircraft_db 4B4437
 """
 
 import csv
 import sys
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
-from src.lib.config import AIRCRAFT_DB_FILE
+# Ensure project root is on sys.path
+try:
+    from . import _bootstrap  # noqa: F401
+except ImportError:  # pragma: no cover
+    import _bootstrap  # type: ignore  # noqa: F401
+
+from adsb.config import AIRCRAFT_DB_FILE
 
 # Default icon for unknown aircraft
 ICON_UNKNOWN = "unknown"
@@ -425,6 +431,61 @@ TYPE_DESCRIPTION_ICONS = {
 }
 
 
+def decode_flag_bits(flag_str: str) -> Dict[str, bool]:
+    """
+    Decode Mictronics/tar1090 aircraft database flag string into booleans.
+
+    The source database stores a 4-bit string (military, interesting, PIA, LADD)
+    but trims trailing zeroes in some rows. This normalizes the flag to 4 chars
+    and maps bits to explicit booleans.
+    """
+    if not flag_str:
+        return {"is_military": False, "is_interesting": False, "is_pia": False, "is_ladd": False}
+
+    flags = flag_str.strip()
+    if len(flags) == 1:
+        flags = f"{flags}000"
+    elif len(flags) == 2:
+        flags = f"{flags}00"
+    elif len(flags) == 3:
+        flags = f"{flags}0"
+    elif len(flags) > 4:
+        flags = flags[-4:]
+
+    flags = flags.rjust(4, "0")
+
+    return {
+        "is_military": flags[0] == "1",
+        "is_interesting": flags[1] == "1",
+        "is_pia": flags[2] == "1",
+        "is_ladd": flags[3] == "1",
+    }
+
+
+def _make_entry(
+    registration: str = "",
+    type_code: str = "",
+    manufacturer: str = "",
+    model: str = "",
+    owner: str = "",
+    flags: str = "",
+) -> Dict[str, Any]:
+    """Build a normalized entry with decoded flags."""
+    bits = decode_flag_bits(flags)
+    return {
+        "registration": registration,
+        "type": type_code,
+        "manufacturer": manufacturer,
+        "model": model,
+        "owner": owner,
+        "flags": flags,
+        "is_military": bits["is_military"],
+        "is_interesting": bits["is_interesting"],
+        "is_pia": bits["is_pia"],
+        "is_ladd": bits["is_ladd"],
+    }
+
+
 def get_icon_for_type(type_code: str) -> str:
     """
     Determine the appropriate icon based on aircraft type designator.
@@ -501,13 +562,12 @@ class AircraftDatabase:
                         if len(parts) >= 3:
                             icao = parts[0].upper().strip()
                             if icao and len(icao) == 6:
-                                self._cache[icao] = {
-                                    "registration": parts[1] if len(parts) > 1 else "",
-                                    "type": parts[2] if len(parts) > 2 else "",
-                                    "manufacturer": "",
-                                    "model": parts[4] if len(parts) > 4 else "",
-                                    "owner": "",
-                                }
+                                self._cache[icao] = _make_entry(
+                                    registration=parts[1] if len(parts) > 1 else "",
+                                    type_code=parts[2] if len(parts) > 2 else "",
+                                    model=parts[4] if len(parts) > 4 else "",
+                                    flags=parts[3] if len(parts) > 3 else "",
+                                )
                 else:
                     # Comma-delimited with headers (OpenSky format)
                     reader = csv.DictReader(f)
@@ -515,13 +575,14 @@ class AircraftDatabase:
                         icao = row.get("icao24") or row.get("icao") or row.get("hex") or ""
                         icao = icao.upper().strip()
                         if icao:
-                            self._cache[icao] = {
-                                "registration": row.get("registration") or row.get("reg") or "",
-                                "type": row.get("typecode") or row.get("type") or row.get("aircraft_type") or "",
-                                "manufacturer": row.get("manufacturername") or row.get("manufacturer") or "",
-                                "model": row.get("model") or "",
-                                "owner": row.get("owner") or row.get("operator") or "",
-                            }
+                            self._cache[icao] = _make_entry(
+                                registration=row.get("registration") or row.get("reg") or "",
+                                type_code=row.get("typecode") or row.get("type") or row.get("aircraft_type") or "",
+                                manufacturer=row.get("manufacturername") or row.get("manufacturer") or "",
+                                model=row.get("model") or "",
+                                owner=row.get("owner") or row.get("operator") or "",
+                                flags=row.get("flags") or "",
+                            )
 
             self._loaded = True
             print(f"Loaded {len(self._cache)} aircraft from database")
@@ -626,5 +687,5 @@ if __name__ == "__main__":
         else:
             print("Not found in database")
     else:
-        print("Usage: python3 aircraft_db.py <ICAO_HEX>")
-        print("Example: python3 aircraft_db.py 4B4437")
+        print("Usage: python -m apps.aircraft_db <ICAO_HEX>")
+        print("Example: python -m apps.aircraft_db 4B4437")
